@@ -1,0 +1,46 @@
+{
+  "name": "magpie-plugin-muse2api",
+  "version": "0.1.0",
+  "description": "Magpie 插件：把自建 muse2api 网关接成 Muse 对话 provider，并提供图片 / 视频生成工具。",
+  "type": "module",
+  "main": "./server/index.mjs",
+  "exports": {
+    ".": "./server/index.mjs",
+    "./server": "./server/index.mjs"
+  },
+  "files": [
+    "server",
+    "README.md",
+    "LICENSE"
+  ],
+  "license": "MIT",
+  "author": "teddyztd",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/teddyztd/magpie-plugin-muse2api.git"
+  },
+  "keywords": [
+    "magpie",
+    "magpie-plugin",
+    "opencode",
+    "opencode-plugin",
+    "muse",
+    "muse2api"
+  ],
+  "scripts": {
+    "test": "bun test"
+  },
+  "magpie": {
+    "name": "muse2api",
+    "summary": {
+      "en": "Muse through your own muse2api gateway: chat, image and video.",
+      "zh": "走自建 muse2api 网关的 Muse：对话、图片、视频。"
+    },
+    "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTQiIGZpbGw9IiMxMTE4MjciLz48cGF0aCBkPSJNMTMgNDFjNi0xNSAxMS0yMSAxOS0yMXMxMyA2IDE5IDIxIiBmaWxsPSJub25lIiBzdHJva2U9IiMzOGJkZjgiIHN0cm9rZS13aWR0aD0iNSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+PGNpcmNsZSBjeD0iMjIiIGN5PSI0NSIgcj0iNC41IiBmaWxsPSIjZjU5ZTBiIi8+PGNpcmNsZSBjeD0iNDIiIGN5PSI0NSIgcj0iNC41IiBmaWxsPSIjZjU5ZTBiIi8+PC9zdmc+",
+    "maxConcurrency": 1,
+    "options": {
+      "baseUrl": "",
+      "apiKey": ""
+    }
+  }
+}
