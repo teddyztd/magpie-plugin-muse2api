@@ -57,6 +57,9 @@ const KINDS = {
 
 const MISSING_CONFIG_HINT = "去 Magpie「插件 → 已安装 → muse2api → 选项」填 baseUrl 与 apiKey"
 
+const missingConfigFail = () =>
+  failJson({ error: missingConfigText(), hint: MISSING_CONFIG_HINT })
+
 async function submit(kind, args, ctx, ready) {
   const prompt = String(args?.prompt ?? "").trim()
   if (!prompt) {
@@ -66,7 +69,7 @@ async function submit(kind, args, ctx, ready) {
   if (refErr) return failJson({ error: refErr, field: "reference_images" })
 
   const c = ready()
-  if (!c) return failJson({ error: missingConfigText(), hint: MISSING_CONFIG_HINT })
+  if (!c) return missingConfigFail()
 
   const body = kind.body(args, prompt)
   const norm = await normalizeRefs(args?.reference_images)
@@ -114,11 +117,7 @@ export function makeToolDefinitions({ input, options } = {}) {
     return baseUrl && apiKey ? { baseUrl, apiKey } : null
   }
   const secondsOf = (v) => Math.min(Math.max(Number(v ?? 40) || 40, 1), 40)
-  const statusReady = () => {
-    const c = ready()
-    if (c) return c
-    return failJson({ error: missingConfigText(), hint: MISSING_CONFIG_HINT })
-  }
+  const statusReady = () => ready() ?? missingConfigFail()
 
   const makeGenerate = (kind) => ({
     description: kind.description,

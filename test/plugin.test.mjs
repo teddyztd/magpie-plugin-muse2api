@@ -4,7 +4,15 @@ import { mkdtemp, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { DEFAULT_BASE, missingConfigText, resolveConfig } from "../server/config.mjs"
+import {
+  DEFAULT_BASE,
+  MAX_REFERENCE_IMAGES,
+  MAX_REFERENCE_IMAGE_BYTES,
+  MAX_REFERENCE_TOTAL_BYTES,
+  formatBytes,
+  missingConfigText,
+  resolveConfig,
+} from "../server/config.mjs"
 import { Muse2ApiPlugin } from "../server/index.mjs"
 import { buildAuthHook, buildConfigHook, buildProviderHook } from "../server/provider.mjs"
 import { _internal as toolsInternal, buildTools, makeToolDefinitions } from "../server/tools.mjs"
@@ -146,7 +154,9 @@ describe("工具配置来源", () => {
     const out = JSON.parse(await tool.generate_image.execute({ prompt: "x" }, {}))
     expect(out.ok).toBe(false)
     expect(out.error).toBe(missingConfigText())
-    expect(out.error).toContain("MUSE2API_BASE_URL")
+    expect(out.error).toContain("插件 → 已安装 → muse2api → 选项")
+    expect(out.error).toContain("不要带 /v1")
+    expect(out.hint).toContain("选项")
     const video = JSON.parse(await tool.video_status.execute({ task_id: "x" }, {}))
     expect(video.ok).toBe(false)
     expect(video.error).toBe(missingConfigText())
@@ -249,6 +259,52 @@ describe("视频工具", () => {
   test("video_status 的入参里没有 wait_seconds", () => {
     const args = makeToolDefinitions({}).video_status.argsSpec
     expect(Object.keys(args)).toEqual(["task_id"])
+  })
+
+  test("完成态的 URL 兼容 url / video.url / result.url 三种形状", async () => {
+    for (const shape of ["url", "video", "result"]) {
+      const m = await startMock({ apiKey: mock.apiKey, videoCompleteAfter: 0, videoUrlShape: shape })
+      try {
+        const t = JSON.parse(
+          await makeToolDefinitions({ options: { baseUrl: m.url, apiKey: mock.apiKey } }).generate_video.execute(
+            { prompt: "wave" },
+            {},
+          ),
+        )
+        const out = JSON.parse(
+          await makeToolDefinitions({ options: { baseUrl: m.url, apiKey: mock.apiKey } }).video_status.execute(
+            { task_id: t.task_id },
+            {},
+          ),
+        )
+        expect(out.ok).toBe(true)
+        expect(out.url).toBe(`${m.url}/v1/media/${t.task_id}.mp4`)
+      } finally {
+        await m.close()
+      }
+    }
+  })
+
+  test("上游任务失败时返回 ok:false 与 error", async () => {
+    const m = await startMock({ apiKey: mock.apiKey, videoCompleteAfter: 0, videoFail: true })
+    try {
+      const defs2 = () => makeToolDefinitions({ options: { baseUrl: m.url, apiKey: mock.apiKey } })
+      const t = JSON.parse(await defs2().generate_video.execute({ prompt: "wave" }, {}))
+      const out = JSON.parse(await defs2().video_status.execute({ task_id: t.task_id }, {}))
+      expect(out.ok).toBe(false)
+      expect(out.status).toBe("failed")
+      expect(out.error).toContain("upstream generation failed")
+      expect(out.task_id).toBe(t.task_id)
+    } finally {
+      await m.close()
+    }
+  })
+
+  test("参考图 schema 描述里的体积上限与常量一致", () => {
+    const desc = makeToolDefinitions({}).generate_image.argsSpec.reference_images.description
+    expect(desc).toContain(formatBytes(MAX_REFERENCE_IMAGE_BYTES))
+    expect(desc).toContain(formatBytes(MAX_REFERENCE_TOTAL_BYTES))
+    expect(desc).toContain(`最多 ${MAX_REFERENCE_IMAGES} 张`)
   })
 })
 

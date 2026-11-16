@@ -1,4 +1,13 @@
-import { IMAGE_MODEL, MAX_REFERENCE_IMAGES, VIDEO_MODEL } from "../config.mjs"
+import {
+  IMAGE_MODEL,
+  MAX_REFERENCE_IMAGES,
+  MAX_REFERENCE_IMAGE_BYTES,
+  MAX_REFERENCE_TOTAL_BYTES,
+  VIDEO_MODEL,
+  formatBytes,
+} from "../config.mjs"
+
+const REF_LIMITS = `单张 ≤${formatBytes(MAX_REFERENCE_IMAGE_BYTES)}、合计 ≤${formatBytes(MAX_REFERENCE_TOTAL_BYTES)}`
 
 // args 只描述一次；有 SDK 时转成 zod，没有时用 JSON Schema（文档两者都接受）。
 export const IMAGE_GEN_ARGS = {
@@ -8,7 +17,7 @@ export const IMAGE_GEN_ARGS = {
   reference_images: {
     type: "array",
     items: { type: "string" },
-    description: `参考图（最多 ${MAX_REFERENCE_IMAGES} 张，单张 ≤40 MiB、合计 ≤100 MiB）：http(s) URL 或本地文件路径（本地文件会转 data URL），用于图生图`,
+    description: `参考图（最多 ${MAX_REFERENCE_IMAGES} 张，${REF_LIMITS}）：http(s) URL 或本地文件路径（本地文件会转 data URL），用于图生图`,
   },
   model: { type: "string", description: `模型，默认 ${IMAGE_MODEL}` },
   extra: { type: "string", description: "附加提示词" },
@@ -27,7 +36,7 @@ export const VIDEO_GEN_ARGS = {
   reference_images: {
     type: "array",
     items: { type: "string" },
-    description: `首帧/参考图（最多 ${MAX_REFERENCE_IMAGES} 张，单张 ≤40 MiB、合计 ≤100 MiB）：http(s) URL 或本地文件路径`,
+    description: `首帧/参考图（最多 ${MAX_REFERENCE_IMAGES} 张，${REF_LIMITS}）：http(s) URL 或本地文件路径`,
   },
   model: { type: "string", description: `模型，默认 ${VIDEO_MODEL}` },
 }

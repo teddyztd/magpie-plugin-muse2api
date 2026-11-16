@@ -2,9 +2,9 @@ import {
   MAX_REFERENCE_IMAGES,
   MAX_REFERENCE_IMAGE_BYTES,
   MAX_REFERENCE_TOTAL_BYTES,
+  formatBytes,
 } from "../config.mjs"
 
-const MIB = 1024 * 1024
 const isRemote = (v) => /^https?:\/\//i.test(v)
 const isData = (v) => /^data:/i.test(v)
 
@@ -25,12 +25,6 @@ function dataUrlBytes(value) {
   if (!/;base64/i.test(value.slice(0, comma))) return Buffer.byteLength(payload)
   const padding = payload.endsWith("==") ? 2 : payload.endsWith("=") ? 1 : 0
   return Math.max(0, Math.floor((payload.length * 3) / 4) - padding)
-}
-
-function formatBytes(n) {
-  if (n >= MIB) return `${(n / MIB).toFixed(1)} MiB`
-  if (n >= 1024) return `${(n / 1024).toFixed(1)} KiB`
-  return `${n} B`
 }
 
 /**
@@ -60,9 +54,26 @@ export async function normalizeRefs(refs, limits = {}) {
       bytes = dataUrlBytes(value)
     } else {
       try {
-        const { readFile } = await import("node:fs/promises")
+        const { readFile, stat } = await import("node:fs/promises")
         const { extname, resolve } = await import("node:path")
-        const buf = await readFile(resolve(value))
+        const path = resolve(value)
+        // 先看 stat 再决定读不读：避免把超限的大文件整个读进内存。
+        const info = await stat(path)
+        if (info.size > maxImage) {
+          return {
+            refs: out,
+            failed,
+            error: `参考图 ${value.slice(0, 80)} 超过单张上限 ${formatBytes(maxImage)}（当前 ${formatBytes(info.size)}）`,
+          }
+        }
+        if (total + info.size > maxTotal) {
+          return {
+            refs: out,
+            failed,
+            error: `参考图合计超过 ${formatBytes(maxTotal)} 上限（累计 ${formatBytes(total + info.size)}）`,
+          }
+        }
+        const buf = await readFile(path)
         bytes = buf.length
         const ext = extname(value).toLowerCase()
         const mime =

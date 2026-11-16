@@ -32,6 +32,9 @@ export async function startMock(options = {}) {
   const imageCompleteAfter = options.imageCompleteAfter ?? 0
   const videoCompleteAfter = options.videoCompleteAfter ?? 0
   const imageNoUrl = options.imageNoUrl ?? false
+  // videoUrlShape: "all" | "url" | "video" | "result"；videoFail: true 时任务以 failed 结束
+  const videoUrlShape = options.videoUrlShape ?? "all"
+  const videoFail = options.videoFail ?? false
 
   const state = {
     requests: [],
@@ -128,15 +131,20 @@ export async function startMock(options = {}) {
       task.polls += 1
       if (task.polls > videoCompleteAfter) {
         const videoUrl = `${base}/v1/media/${id}.mp4`
-        return send(200, {
-          id,
-          task_id: id,
-          status: "completed",
-          progress: 100,
-          url: videoUrl,
-          video: { url: videoUrl },
-          result: { url: videoUrl },
-        })
+        if (videoFail) {
+          return send(200, {
+            id,
+            task_id: id,
+            status: "failed",
+            progress: 100,
+            error: "upstream generation failed",
+          })
+        }
+        const body = { id, task_id: id, status: "completed", progress: 100 }
+        if (videoUrlShape === "all" || videoUrlShape === "url") body.url = videoUrl
+        if (videoUrlShape === "all" || videoUrlShape === "video") body.video = { url: videoUrl }
+        if (videoUrlShape === "all" || videoUrlShape === "result") body.result = { url: videoUrl }
+        return send(200, body)
       }
       return send(200, { id, task_id: id, status: "running", progress: 30 })
     }

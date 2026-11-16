@@ -88,7 +88,7 @@ Magpie GUI ──登录──> authorize(baseUrl, apiKey) ──GET /v1/models�
   - `provider: "muse2api"`，`icon`（data URL 或内置静态图标）。
   - `methods: [{ type: "api", label: "muse2api API key", placeholder: "m2a_…", prompts: [
     { type: "text", key: "baseUrl", message: "muse2api 地址", placeholder: "http://127.0.0.1:18610",
-      validate: 必须是 http(s) URL },
+      validate: 必须是 http(s) URL；另外拒绝带 /v1 的地址（插件会自动补） },
     { type: "password", key: "apiKey", message: "MUSE2API_KEY" } ] }]`。
   - `authorize(inputs)`：`GET ${baseUrl}/v1/models`，带 `Authorization: Bearer <key>`；
     2xx → `{ type: "success", key: inputs.apiKey, metadata: { baseUrl } }`；
@@ -108,10 +108,12 @@ Magpie GUI ──登录──> authorize(baseUrl, apiKey) ──GET /v1/models�
 - 用 `import { tool } from "@opencode-ai/plugin"`；`args` 用 zod 字段表，每项带 `.describe()`。
 - 工具名：`generate_image`、`image_status`、`generate_video`、`video_status`。Magpie 侧会加
   `<插件短名>_` 前缀（展示为 `muse2api_generate_image`）。
-- 配置读取顺序：`options.baseUrl` / `options.apiKey` → `client.magpie?.option?.("baseUrl")` /
-  `("apiKey")` → `process.env.MUSE2API_BASE_URL` / `MUSE2API_KEY`。全缺时返回可操作错误文本
-  （指明在 Magpie 设置 → 插件 → muse2api 中填写）。
-- 每个 `execute` 用 `AbortSignal.any([ctx.abort, AbortSignal.timeout(50_000)])` 兜住 55s 上限。
+- 配置读取顺序：`options.baseUrl` / `options.apiKey` → `input.magpie.option?.("baseUrl")` /
+  `("apiKey")` → `process.env.MUSE2API_BASE_URL` / `MUSE2API_KEY`。全缺时返回**可 `JSON.parse` 的
+  错误对象**（`ok:false` / `status` / `error`），文案指向「插件 → 已安装 → muse2api → 选项」，
+  并提示 `baseUrl` 不要带 `/v1`。
+- 单次请求超时按剩余预算截断：默认 50s；`image_status` 轮询时每次请求 ≤10s，且整体受
+  `wait_seconds`（上限 40s）约束，不会把一次调用拖过宿主的 55s 上限。
 - 返回契约：**任何一次调用都返回可 `JSON.parse` 的字符串**（Magpie 把对象以 JSON 发回，这里显式
   `JSON.stringify` 保证可读）。成功为 `{ ok: true, … }`；失败统一为
   `{ ok: false, status, error, … }`，按需带 `baseUrl` / `task_id` / `http_status` / `field` / `hint`。
@@ -168,19 +170,23 @@ README 明确：本插件**替代** `github:JohnWangggg/magpie-muse-web`（两�
 ## Testing Decisions
 
 - `bun test`（无 TypeScript 编译步骤；纯 ESM JS）。
-- 测试内起 `Bun.serve` mock muse2api，覆盖：
+- 测试内起 `node:http` mock muse2api，覆盖：
   1. `authorize`：正确 key → success + metadata.baseUrl；错误 key → failed；不可达 → failed。
   2. `loader`：返回 `baseURL = <baseUrl>/v1` 与 `apiKey`。
   3. `provider.models`：mock `/v1/models` 返回三条 → 只暴露 `muse-spark`；mock 500 → 回退静态。
   4. `generate_image`：断言请求体含 `prompt` 与 `async: true`，返回 `task_id`。
   5. `image_status`：mock 先 `queued` 后 `completed` → 返回 `url`。
   6. `generate_video` / `video_status`：提交拿 `task_id`；`video_status` 每次只发一次请求（计数差 1），
-     第一次 running、第二次 completed 并取 `url`。
-  7. 返回契约：四个工具的成功与全部失败路径（缺配置、空 prompt、参考图类型/张数/体积、连接失败、
-     上游 401、任务 404、完成但无 URL）逐条 `JSON.parse` 成功，失败含 `ok:false` / `status` / `error`。
-  8. 参考图体积：超张数、超单张、超合计、data URL 按解码字节、正常 8 张通过、超限不发请求。
+     第一次 running、第二次 completed 并取 `url`；`url` / `video.url` / `result.url` 三种形状各测一次；
+     上游 `failed` 任务 → `ok:false` + `error`。
+  7. 返回契约：四个工具的成功与全部失败路径（缺配置、空 prompt、参考图类型/张数、连接失败、
+     上游 401、任务 404、完成但无 URL）逐条 `JSON.parse` 成功，失败含 `ok:false` / `status` / `error`；
+     参考图的体积超限在工具层另有一例（超限不发请求）。
+  8. 参考图体积（单元层，注入小上限）：超张数、超单张、超合计、data URL 按解码字节、正常 8 张通过；
+     另断言 schema 描述里的张数与体积文案来自 `config.mjs` 常量。
   9. `auth.icon` 存在且与 `package.json` 的 `magpie.icon` 不同。
-  10. 缺配置：不设 options/env → 返回含“插件选项”的可操作 JSON 错误。
+  10. 缺配置：不设 options/env → 返回可操作的 JSON 错误，`error` 含「插件 → 已安装 → muse2api → 选项」
+      与「不要带 /v1」。
 - 只测插件导出的钩子与工具，不测 muse2api 内部（那是上游）。
 - 真实验收（用户侧）：Magpie GUI 安装 → 登录填地址与 key → `provider test` 通过 → 对话 →
   让 agent 调 `generate_image` / `image_status`，确认返回 `/v1/media/...` 直链可打开。

@@ -10,6 +10,15 @@ export const MAX_REFERENCE_IMAGES = 8
 export const MAX_REFERENCE_IMAGE_BYTES = 40 * 1024 * 1024
 export const MAX_REFERENCE_TOTAL_BYTES = 100 * 1024 * 1024
 
+const MIB = 1024 * 1024
+
+/** 人类可读的字节数，schema 描述与错误文案共用，保证只有一份格式化逻辑。 */
+export function formatBytes(n) {
+  if (n >= MIB) return `${(n / MIB).toFixed(1)} MiB`
+  if (n >= 1024) return `${(n / 1024).toFixed(1)} KiB`
+  return `${n} B`
+}
+
 /**
  * 统一地址：去空白、去尾斜杠、去用户多写的 /v1（插件自己会拼 /v1）。
  */

@@ -137,7 +137,7 @@ magpie plugin add ./magpie-plugin-muse2api
 ## 开发
 
 ```bash
-bun test              # 49 条单元测试，含 mock muse2api
+bun test              # 52 条单元测试，含 mock muse2api
 bun run test/smoke.mjs  # 端到端冒烟：插件入口 → 真 HTTP → mock muse2api，四条工具链跑通
 ```
 
