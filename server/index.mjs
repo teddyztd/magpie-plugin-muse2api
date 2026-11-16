@@ -1,5 +1,5 @@
 import { buildAuthHook, buildConfigHook, buildProviderHook } from "./provider.mjs"
-import { buildTools, _internal as toolInternals } from "./tools.mjs"
+import { buildTools } from "./tools.mjs"
 
 export const Muse2ApiPlugin = async (input, options) => {
   const hooks = {
@@ -22,13 +22,4 @@ export const Muse2ApiPlugin = async (input, options) => {
   }
 
   return hooks
-}
-
-// magpie 只把导出的函数当插件入口；_internal 是对象，安全。
-export const _internal = {
-  buildConfigHook,
-  buildAuthHook,
-  buildProviderHook,
-  buildTools,
-  ...toolInternals,
 }

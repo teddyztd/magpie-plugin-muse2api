@@ -2,9 +2,10 @@ import { makeToolDefinitions } from "./definitions.mjs"
 import { toJsonSchema, toZod } from "./schema.mjs"
 import { loadSdk } from "./sdk.mjs"
 
-export async function buildTools({ input, options } = {}) {
+export async function buildTools({ input, options, sdk: sdkOverride } = {}) {
   const definitions = makeToolDefinitions({ input, options })
-  const sdk = await loadSdk(input)
+  // sdkOverride 传 null 表示「确定没有 SDK」，测试用它固定走 JSON Schema 分支。
+  const sdk = sdkOverride !== undefined ? sdkOverride : await loadSdk(input)
   const toolFn = sdk?.tool
   const schema = sdk?.tool?.schema
 

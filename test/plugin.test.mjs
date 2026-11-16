@@ -531,8 +531,11 @@ describe("工具形态与辅助函数", () => {
     expect(schema.properties.refs.items).toEqual({ type: "string" })
   })
 
-  test("buildTools 在拿不到 SDK 时退回 JSON Schema 形态", async () => {
-    const built = await buildTools({ options: { baseUrl: mock.url, apiKey: mock.apiKey } })
+  test("buildTools 在明确没有 SDK 时退回 JSON Schema 形态", async () => {
+    const built = await buildTools({
+      options: { baseUrl: mock.url, apiKey: mock.apiKey },
+      sdk: null,
+    })
     expect(Object.keys(built).sort()).toEqual([
       "generate_image",
       "generate_video",
@@ -540,11 +543,21 @@ describe("工具形态与辅助函数", () => {
       "video_status",
     ])
     const args = built.generate_image.args
-    // 有 SDK 时是 zod 字段表，没有时是 JSON Schema；两种都合法。
-    const isJsonSchema = args?.type === "object"
-    const isZodFields = args && typeof args === "object" && "prompt" in args
-    expect(isJsonSchema || isZodFields).toBe(true)
+    expect(args.type).toBe("object")
+    expect(args.properties.prompt.type).toBe("string")
+    expect(args.required).toEqual(["prompt"])
     expect(typeof built.generate_image.execute).toBe("function")
+  })
+
+  test("buildTools 产出的每个工具都有描述、入参与可执行的 execute", async () => {
+    const built = await buildTools({ options: { baseUrl: mock.url, apiKey: mock.apiKey } })
+    for (const [name, def] of Object.entries(built)) {
+      expect(typeof def.description).toBe("string")
+      expect(def.description.length).toBeGreaterThan(0)
+      expect(def.args).toBeTruthy()
+      expect(typeof def.execute).toBe("function")
+      expect(name).toMatch(/^(generate|image|video)_/)
+    }
   })
 
   test("normalizeRefs 把本地图片转成 data URL，读不到的单独报告", async () => {

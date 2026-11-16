@@ -100,6 +100,9 @@ Magpie GUI ──登录──> authorize(baseUrl, apiKey) ──GET /v1/models�
   定义（`muse-spark` 文本；`muse-image` / `muse-video` 不作为对话模型暴露，避免用户在聊天里选到
   不支持 chat 的模型）；失败时返回原列表（回退静态 `muse-spark`）。
 - 401 处理交给 Magpie 默认（标记账号）；不实现 `X-Magpie-Sign-In`。
+- `maxConcurrency: 1` 的依据：muse2api 背后是单个 Chromium 会话在驱动 muse.ai 网页助手，
+  同一账号上的并发请求会互相抢占同一个浏览器上下文；把插件侧并发压到 1，让 muse2api 自己的
+  任务队列（`CONCURRENCY`）成为唯一并发源。图片/视频工具本身是异步任务，不依赖并发换吞吐。
 
 ### 工具
 
