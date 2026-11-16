@@ -12,7 +12,7 @@ import { startMock } from "./mock-muse2api.mjs"
 let mock
 
 beforeAll(async () => {
-  mock = await startMock({ imageCompleteAfter: 1 })
+  mock = await startMock({ imageCompleteAfter: 1, videoCompleteAfter: 1 })
 })
 
 afterAll(async () => {
@@ -212,9 +212,81 @@ describe("视频工具", () => {
     expect(sent.model).toBe("muse-video")
     expect(sent.duration).toBe(5)
 
-    const out = JSON.parse(await defs().video_status.execute({ task_id: task.task_id }, {}))
+    const out = JSON.parse(
+      await defs().video_status.execute({ task_id: task.task_id, wait_seconds: 5 }, {}),
+    )
     expect(out.status).toBe("completed")
     expect(out.url).toContain("/v1/media/vid_")
+  })
+})
+
+describe("输入校验与边界", () => {
+  const defs = () =>
+    makeToolDefinitions({ options: { baseUrl: mock.url, apiKey: mock.apiKey } })
+
+  test("空 prompt 直接拒绝，不发请求", async () => {
+    const before = mock.state.requests.length
+    expect(String(await defs().generate_image.execute({ prompt: "   " }, {}))).toContain(
+      "prompt 不能为空",
+    )
+    expect(String(await defs().generate_video.execute({}, {}))).toContain("prompt 不能为空")
+    expect(mock.state.requests.length).toBe(before)
+  })
+
+  test("参考图超过 8 张拒绝", async () => {
+    const nine = Array.from({ length: 9 }, (_, i) => `https://example.com/${i}.png`)
+    const out = await defs().generate_image.execute({ prompt: "x", reference_images: nine }, {})
+    expect(String(out)).toContain("最多 8 张")
+  })
+
+  test("reference_images 不是数组时给出提示", async () => {
+    const out = await defs().generate_image.execute(
+      { prompt: "x", reference_images: "https://example.com/a.png" },
+      {},
+    )
+    expect(String(out)).toContain("必须是字符串数组")
+  })
+
+  test("baseUrl 带 /v1 会被规范化，不产生 /v1/v1", () => {
+    expect(resolveConfig({ options: { baseUrl: "http://h:18610/v1", apiKey: "k" } })).toEqual({
+      baseUrl: "http://h:18610",
+      apiKey: "k",
+    })
+  })
+
+  test("config 钩子保留用户已有的同 id 配置", async () => {
+    const cfg = {
+      provider: { muse2api: { name: "我的", models: { "muse-spark": { name: "Mine" } } } },
+    }
+    await buildConfigHook()(cfg)
+    expect(cfg.provider.muse2api.name).toBe("我的")
+    expect(cfg.provider.muse2api.models["muse-spark"].name).toBe("Mine")
+    expect(cfg.provider.muse2api.npm).toBe("@ai-sdk/openai-compatible")
+  })
+
+  test("validate 拒绝带 /v1 的地址", () => {
+    const validate = buildAuthHook().methods[0].prompts[0].validate
+    expect(validate("http://127.0.0.1:18610/v1")).toBeTruthy()
+  })
+})
+
+describe("异常返回", () => {
+  test("图片任务完成但没有 URL 时给出 error", async () => {
+    const mockNoUrl = await startMock({ imageNoUrl: true })
+    try {
+      const defs = makeToolDefinitions({
+        options: { baseUrl: mockNoUrl.url, apiKey: mockNoUrl.apiKey },
+      })
+      const task = JSON.parse(await defs.generate_image.execute({ prompt: "x" }, {}))
+      const out = JSON.parse(
+        await defs.image_status.execute({ task_id: task.task_id, wait_seconds: 5 }, {}),
+      )
+      expect(out.status).toBe("completed")
+      expect(out.url).toBeUndefined()
+      expect(out.error).toContain("PUBLIC_BASE")
+    } finally {
+      await mockNoUrl.close()
+    }
   })
 })
 
@@ -246,14 +318,21 @@ describe("工具形态与辅助函数", () => {
     expect(typeof built.generate_image.execute).toBe("function")
   })
 
-  test("normalizeRefs 把本地图片转成 data URL", async () => {
+  test("normalizeRefs 把本地图片转成 data URL，读不到的单独报告", async () => {
     const dir = await mkdtemp(join(tmpdir(), "muse2api-"))
     const file = join(dir, "a.png")
     await writeFile(file, Buffer.from("89504e470d0a1a0a", "hex"))
-    const refs = await toolsInternal.normalizeRefs([file, "https://example.com/b.jpg", "  "])
+    const { refs, failed } = await toolsInternal.normalizeRefs([
+      file,
+      "https://example.com/b.jpg",
+      "  ",
+      join(dir, "missing.png"),
+    ])
     expect(refs).toHaveLength(2)
     expect(refs[0]).toStartWith("data:image/png;base64,")
     expect(refs[1]).toBe("https://example.com/b.jpg")
+    expect(failed).toHaveLength(1)
+    expect(failed[0].value).toContain("missing.png")
   })
 })
 

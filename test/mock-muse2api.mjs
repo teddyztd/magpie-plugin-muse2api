@@ -31,6 +31,7 @@ export async function startMock(options = {}) {
   const models = options.models ?? DEFAULT_MODELS
   const imageCompleteAfter = options.imageCompleteAfter ?? 0
   const videoCompleteAfter = options.videoCompleteAfter ?? 0
+  const imageNoUrl = options.imageNoUrl ?? false
 
   const state = {
     requests: [],
@@ -88,7 +89,7 @@ export async function startMock(options = {}) {
           data: [
             {
               revised_prompt: task.prompt,
-              url: `${base}/v1/media/${id}.png`,
+              ...(imageNoUrl ? {} : { url: `${base}/v1/media/${id}.png` }),
               size: "1024x1024",
               kind: "image",
               bytes: 1234,
@@ -107,7 +108,7 @@ export async function startMock(options = {}) {
       const body = await readBody(req)
       state.videoPosts.push(body)
       const id = `vid_${state.videoTasks.size + 1}`
-      state.videoTasks.set(id, { body })
+      state.videoTasks.set(id, { polls: 0, body })
       return send(200, {
         id,
         task_id: id,
@@ -124,7 +125,8 @@ export async function startMock(options = {}) {
       const id = decodeURIComponent(videoTask[1])
       const task = state.videoTasks.get(id)
       if (!task) return send(404, { detail: "task not found" })
-      if (videoCompleteAfter === 0) {
+      task.polls += 1
+      if (task.polls > videoCompleteAfter) {
         const videoUrl = `${base}/v1/media/${id}.mp4`
         return send(200, {
           id,

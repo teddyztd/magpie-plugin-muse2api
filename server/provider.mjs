@@ -3,6 +3,7 @@ import {
   MODEL_ID,
   PROVIDER_ID,
   PROVIDER_NAME,
+  authHeaders,
   trimBase,
 } from "./config.mjs"
 
@@ -25,12 +26,15 @@ function baseModels() {
 export function buildConfigHook() {
   return async (cfg) => {
     cfg.provider ??= {}
+    // 保留宿主/用户已有的同 id 配置，只补默认值，避免覆盖手改过的条目。
+    const was = cfg.provider[PROVIDER_ID] ?? {}
     cfg.provider[PROVIDER_ID] = {
-      name: PROVIDER_NAME,
-      npm: "@ai-sdk/openai-compatible",
+      ...was,
+      name: was.name ?? PROVIDER_NAME,
+      npm: was.npm ?? "@ai-sdk/openai-compatible",
       // 占位；loader 会用登录时填的 baseUrl 覆盖。
-      api: `${DEFAULT_BASE}/v1`,
-      models: baseModels(),
+      api: was.api ?? `${DEFAULT_BASE}/v1`,
+      models: { ...baseModels(), ...(was.models ?? {}) },
     }
   }
 }
@@ -42,11 +46,14 @@ const prompts = [
     message: "muse2api 地址（不含 /v1）",
     placeholder: "http://127.0.0.1:18610",
     validate: (v) => {
+      const raw = String(v ?? "").trim()
       try {
-        const u = new URL(String(v ?? "").trim())
-        return u.protocol === "http:" || u.protocol === "https:"
-          ? undefined
-          : "需要 http:// 或 https:// 开头"
+        const u = new URL(raw)
+        if (u.protocol !== "http:" && u.protocol !== "https:") {
+          return "需要 http:// 或 https:// 开头"
+        }
+        if (/\/v1\/?$/i.test(u.pathname)) return "地址不要带 /v1（插件会自动补）"
+        return undefined
       } catch {
         return "不是合法 URL"
       }
@@ -74,7 +81,9 @@ export function buildAuthHook() {
     ],
     async authorize(inputs) {
       const baseUrl = trimBase(inputs?.baseUrl)
-      const apiKey = String(inputs?.apiKey ?? inputs?.key ?? "").trim()
+      const apiKey = String(inputs?.apiKey ?? inputs?.key ?? "")
+        .trim()
+        .replace(/^Bearer\s+/i, "")
       if (!baseUrl) return { type: "failed", error: "请填写 muse2api 地址" }
       if (!apiKey) return { type: "failed", error: "请填写 MUSE2API_KEY" }
       let res
@@ -119,7 +128,7 @@ export function buildProviderHook() {
       let body
       try {
         const res = await fetch(`${baseUrl}/v1/models`, {
-          headers: { authorization: `Bearer ${auth.key}` },
+          headers: authHeaders(auth.key),
           signal: AbortSignal.timeout(8_000),
         })
         if (!res.ok) return fallback

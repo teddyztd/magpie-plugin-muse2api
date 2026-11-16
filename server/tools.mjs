@@ -1,5 +1,6 @@
 import {
   IMAGE_MODEL,
+  MAX_REFERENCE_IMAGES,
   VIDEO_MODEL,
   authHeaders,
   missingConfigText,
@@ -17,7 +18,7 @@ const IMAGE_GEN_ARGS = {
   reference_images: {
     type: "array",
     items: { type: "string" },
-    description: "参考图：http(s) URL 或本地文件路径（本地文件会转 data URL），用于图生图",
+    description: `参考图（最多 ${MAX_REFERENCE_IMAGES} 张）：http(s) URL 或本地文件路径（本地文件会转 data URL），用于图生图`,
   },
   model: { type: "string", description: `模型，默认 ${IMAGE_MODEL}` },
   extra: { type: "string", description: "附加提示词" },
@@ -36,13 +37,14 @@ const VIDEO_GEN_ARGS = {
   reference_images: {
     type: "array",
     items: { type: "string" },
-    description: "首帧/参考图：http(s) URL 或本地文件路径",
+    description: "首帧/参考图（最多 8 张）：http(s) URL 或本地文件路径",
   },
   model: { type: "string", description: `模型，默认 ${VIDEO_MODEL}` },
 }
 
 const VIDEO_STATUS_ARGS = {
   task_id: { type: "string", required: true, description: "generate_video 返回的 task_id" },
+  wait_seconds: { type: "number", description: "最多等待秒数，默认 40，上限 40" },
 }
 
 function toJsonSchema(spec) {
@@ -71,9 +73,11 @@ function toZod(spec, schema) {
   return out
 }
 
+/** 参考图 → data URL（本地文件）；读不到的单独收集，由工具返回可操作错误。 */
 async function normalizeRefs(refs) {
-  if (!Array.isArray(refs)) return []
+  if (!Array.isArray(refs)) return { refs: [], failed: [] }
   const out = []
+  const failed = []
   for (const raw of refs) {
     const value = String(raw ?? "").trim()
     if (!value) continue
@@ -95,65 +99,139 @@ async function normalizeRefs(refs) {
               ? "image/gif"
               : "image/jpeg"
       out.push(`data:${mime};base64,${buf.toString("base64")}`)
-    } catch {
-      // 读不到就原样交给上游判定，并把问题留在返回里
-      out.push(value)
+    } catch (e) {
+      failed.push({ value, error: e?.message ?? String(e) })
     }
   }
-  return out
+  return { refs: out, failed }
 }
 
-async function waitImageTask(baseUrl, apiKey, taskId, budgetMs, ctx) {
+function checkRefs(rawRefs) {
+  if (rawRefs === undefined || rawRefs === null) return undefined
+  if (!Array.isArray(rawRefs)) return "reference_images 必须是字符串数组"
+  if (rawRefs.length > MAX_REFERENCE_IMAGES) {
+    return `参考图最多 ${MAX_REFERENCE_IMAGES} 张（当前 ${rawRefs.length} 张）`
+  }
+  return undefined
+}
+
+function pendingView(body) {
+  return { status: body?.status ?? "queued", progress: body?.progress }
+}
+
+/**
+ * 轮询任务直到完成、失败、或预算耗尽。
+ * 每次请求的超时都按剩余预算截断，保证总墙钟 < 工具 55s 上限。
+ */
+async function pollTask({ url, apiKey, taskId, budgetMs, ctx, mapCompleted }) {
   const deadline = Date.now() + budgetMs
   let last = {}
   for (;;) {
+    const left = deadline - Date.now()
+    if (left <= 0) {
+      return {
+        ...pendingView(last),
+        task_id: taskId,
+        hint: "仍在生成，稍后再调用（传同一个 task_id）",
+      }
+    }
     const r = await requestJson(
-      `${baseUrl}/v1/images/tasks/${encodeURIComponent(taskId)}`,
+      url,
       { headers: authHeaders(apiKey) },
       ctx,
+      Math.min(left, 10_000),
     )
     if (r.status === 0) {
-      return { ...last, task_id: taskId, error: `查询失败：${r.error}` }
+      return { ...pendingView(last), task_id: taskId, error: `查询失败：${r.error}` }
     }
     if (!r.ok) {
-      return { ...last, task_id: taskId, error: `查询失败（HTTP ${r.status}）：${pickError(r)}` }
+      return {
+        ...pendingView(last),
+        task_id: taskId,
+        error: `查询失败（HTTP ${r.status}）：${pickError(r)}`,
+      }
     }
     const body = r.body ?? {}
     last = body
-    if (body.status === "completed") {
-      const data = Array.isArray(body.data) ? body.data[0] : undefined
-      const url = data?.url ?? body.url ?? body.result?.url
-      return {
-        status: "completed",
-        task_id: taskId,
-        url,
-        size: data?.size ?? body.size,
-        kind: data?.kind ?? body.kind,
-        bytes: data?.bytes ?? body.bytes,
-        revised_prompt: data?.revised_prompt,
-      }
+    if (["completed", "succeeded", "success"].includes(body.status)) {
+      return mapCompleted(body)
     }
     if (["failed", "error", "cancelled", "canceled"].includes(body.status)) {
       return {
         status: body.status,
+        ...pendingView(body),
         task_id: taskId,
         error: body.error ?? body.message ?? "生成失败",
       }
     }
-    if (Date.now() + 1500 > deadline) {
+    if (deadline - Date.now() <= 1500) {
       return {
-        status: body.status ?? "queued",
-        progress: body.progress,
+        ...pendingView(body),
         task_id: taskId,
-        hint: "仍在生成，稍后再调用 image_status（传同一个 task_id）",
+        hint: "仍在生成，稍后再调用（传同一个 task_id）",
       }
     }
     try {
       await sleep(1500, ctx?.abort)
     } catch (e) {
-      return { status: body.status ?? "queued", task_id: taskId, error: `已取消：${e?.message ?? e}` }
+      return { ...pendingView(body), task_id: taskId, error: `已取消：${e?.message ?? e}` }
     }
   }
+}
+
+function imageTaskUrl(baseUrl, taskId) {
+  return `${baseUrl}/v1/images/tasks/${encodeURIComponent(taskId)}`
+}
+
+function videoTaskUrl(baseUrl, taskId) {
+  return `${baseUrl}/v1/videos/${encodeURIComponent(taskId)}`
+}
+
+function mapImageCompleted(taskId, body) {
+  const data = Array.isArray(body.data) ? body.data[0] : undefined
+  const url = data?.url ?? body.url ?? body.result?.url
+  const out = {
+    status: "completed",
+    task_id: taskId,
+    url,
+    size: data?.size ?? body.size,
+    kind: data?.kind ?? body.kind,
+    bytes: data?.bytes ?? body.bytes,
+    revised_prompt: data?.revised_prompt,
+  }
+  if (!url) out.error = "任务已完成但没有返回 URL（检查 muse2api 的 PUBLIC_BASE）"
+  return out
+}
+
+function mapVideoCompleted(taskId, body) {
+  const url = body.url ?? body.video?.url ?? body.result?.url
+  const out = { status: "completed", task_id: taskId, url }
+  if (body.size) out.size = body.size
+  if (body.duration) out.duration = body.duration
+  if (!url) out.error = "任务已完成但没有返回 URL（检查 muse2api 的 PUBLIC_BASE）"
+  return out
+}
+
+async function waitImageTask(baseUrl, apiKey, taskId, budgetMs, ctx) {
+  return pollTask({
+    url: imageTaskUrl(baseUrl, taskId),
+    apiKey,
+    taskId,
+    budgetMs,
+    ctx,
+    mapCompleted: (body) => mapImageCompleted(taskId, body),
+  })
+}
+
+async function waitVideoTask(baseUrl, apiKey, taskId, budgetMs, ctx) {
+  return pollTask({
+    url: videoTaskUrl(baseUrl, taskId),
+    apiKey,
+    taskId,
+    budgetMs,
+    ctx,
+    mapCompleted: (body) => mapVideoCompleted(taskId, body),
+  })
 }
 
 export function makeToolDefinitions({ input, options } = {}) {
@@ -163,6 +241,7 @@ export function makeToolDefinitions({ input, options } = {}) {
     if (!baseUrl || !apiKey) return null
     return { baseUrl, apiKey }
   }
+  const secondsOf = (v) => Math.min(Math.max(Number(v ?? 40) || 40, 1), 40)
 
   return {
     generate_image: {
@@ -170,17 +249,21 @@ export function makeToolDefinitions({ input, options } = {}) {
         "提交一次 muse2api 图片生成（文生图/图生图），立即返回 task_id（图片一律异步）。随后用 image_status 取结果。",
       argsSpec: IMAGE_GEN_ARGS,
       async execute(args, ctx) {
+        const prompt = String(args?.prompt ?? "").trim()
+        if (!prompt) return "prompt 不能为空：请描述你想生成的画面"
+        const refErr = checkRefs(args?.reference_images)
+        if (refErr) return refErr
         const c = ready()
         if (!c) return missingConfigText()
-        const body = {
-          prompt: String(args?.prompt ?? ""),
-          model: args?.model || IMAGE_MODEL,
-          async: true,
-        }
+
+        const body = { prompt, model: args?.model || IMAGE_MODEL, async: true }
         if (args?.size) body.size = String(args.size)
         if (args?.aspect_ratio) body.aspect_ratio = String(args.aspect_ratio)
         if (args?.extra) body.extra = String(args.extra)
-        const refs = await normalizeRefs(args?.reference_images)
+        const { refs, failed } = await normalizeRefs(args?.reference_images)
+        if (failed.length) {
+          return `参考图读取失败：${failed.map((f) => `${f.value}（${f.error}）`).join("；")}`
+        }
         if (refs.length) body.images = refs
 
         const r = await requestJson(
@@ -188,6 +271,7 @@ export function makeToolDefinitions({ input, options } = {}) {
           { method: "POST", headers: authHeaders(c.apiKey), body: JSON.stringify(body) },
           ctx,
         )
+        if (r.status === 0) return `连接失败（${c.baseUrl}）：${r.error}`
         if (!r.ok) return `提交失败（HTTP ${r.status}）：${pickError(r)}`
         const taskId = r.body?.task_id ?? r.body?.id
         if (!taskId) return `提交失败：muse2api 没有返回 task_id：${r.text.slice(0, 300)}`
@@ -205,15 +289,21 @@ export function makeToolDefinitions({ input, options } = {}) {
     },
 
     image_status: {
-      description: "查询 muse2api 图片任务；完成时返回可直接打开的图片 URL。",
+      description:
+        "查询 muse2api 图片任务（内部最多等 wait_seconds 秒轮询）；完成时返回可直接打开的图片 URL。",
       argsSpec: IMAGE_STATUS_ARGS,
       async execute(args, ctx) {
         const c = ready()
         if (!c) return missingConfigText()
         const taskId = String(args?.task_id ?? "").trim()
         if (!taskId) return "缺少 task_id"
-        const seconds = Math.min(Math.max(Number(args?.wait_seconds ?? 40) || 40, 1), 40)
-        const result = await waitImageTask(c.baseUrl, c.apiKey, taskId, seconds * 1000, ctx)
+        const result = await waitImageTask(
+          c.baseUrl,
+          c.apiKey,
+          taskId,
+          secondsOf(args?.wait_seconds) * 1000,
+          ctx,
+        )
         return JSON.stringify(result, null, 2)
       },
     },
@@ -223,16 +313,21 @@ export function makeToolDefinitions({ input, options } = {}) {
         "提交一次 muse2api 视频生成（文生视频/图生视频），立即返回 task_id。视频通常数分钟，用 video_status 轮询。",
       argsSpec: VIDEO_GEN_ARGS,
       async execute(args, ctx) {
+        const prompt = String(args?.prompt ?? "").trim()
+        if (!prompt) return "prompt 不能为空：请描述视频的画面、镜头与动作"
+        const refErr = checkRefs(args?.reference_images)
+        if (refErr) return refErr
         const c = ready()
         if (!c) return missingConfigText()
-        const body = {
-          prompt: String(args?.prompt ?? ""),
-          model: args?.model || VIDEO_MODEL,
-        }
+
+        const body = { prompt, model: args?.model || VIDEO_MODEL }
         if (args?.duration) body.duration = Number(args.duration)
         if (args?.aspect_ratio) body.aspect_ratio = String(args.aspect_ratio)
         if (args?.size) body.size = String(args.size)
-        const refs = await normalizeRefs(args?.reference_images)
+        const { refs, failed } = await normalizeRefs(args?.reference_images)
+        if (failed.length) {
+          return `参考图读取失败：${failed.map((f) => `${f.value}（${f.error}）`).join("；")}`
+        }
         if (refs.length) body.images = refs
 
         const r = await requestJson(
@@ -240,6 +335,7 @@ export function makeToolDefinitions({ input, options } = {}) {
           { method: "POST", headers: authHeaders(c.apiKey), body: JSON.stringify(body) },
           ctx,
         )
+        if (r.status === 0) return `连接失败（${c.baseUrl}）：${r.error}`
         if (!r.ok) return `提交失败（HTTP ${r.status}）：${pickError(r)}`
         const taskId = r.body?.task_id ?? r.body?.id
         if (!taskId) return `提交失败：muse2api 没有返回 task_id：${r.text.slice(0, 300)}`
@@ -257,47 +353,59 @@ export function makeToolDefinitions({ input, options } = {}) {
     },
 
     video_status: {
-      description: "查询 muse2api 视频任务；完成时返回可直接打开的视频 URL。",
+      description:
+        "查询 muse2api 视频任务（内部最多等 wait_seconds 秒轮询）；完成时返回可直接打开的视频 URL。",
       argsSpec: VIDEO_STATUS_ARGS,
       async execute(args, ctx) {
         const c = ready()
         if (!c) return missingConfigText()
         const taskId = String(args?.task_id ?? "").trim()
         if (!taskId) return "缺少 task_id"
-        const r = await requestJson(
-          `${c.baseUrl}/v1/videos/${encodeURIComponent(taskId)}`,
-          { headers: authHeaders(c.apiKey) },
+        const result = await waitVideoTask(
+          c.baseUrl,
+          c.apiKey,
+          taskId,
+          secondsOf(args?.wait_seconds) * 1000,
           ctx,
         )
-        if (r.status === 0) return `查询失败：${r.error}`
-        if (!r.ok) return `查询失败（HTTP ${r.status}）：${pickError(r)}`
-        const body = r.body ?? {}
-        const url = body.url ?? body.video?.url ?? body.result?.url
-        const out = {
-          status: body.status,
-          progress: body.progress,
-          task_id: taskId,
-        }
-        if (url) out.url = url
-        if (body.status === "completed" && !url) out.error = "任务已完成但没有返回 URL"
-        if (body.status !== "completed" && !url) out.hint = "任务未完成，稍后再查"
-        return JSON.stringify(out, null, 2)
+        return JSON.stringify(result, null, 2)
       },
     },
   }
 }
 
+/** 优先从宿主依赖解析 SDK；失败再试 magpie 配置目录下的 plugins/node_modules。 */
+async function loadSdk(input) {
+  try {
+    return await import("@opencode-ai/plugin")
+  } catch {
+    // 继续尝试宿主绝对路径
+  }
+  const dir = typeof input?.directory === "string" ? input.directory : ""
+  if (!dir) return null
+  try {
+    const { pathToFileURL } = await import("node:url")
+    const { join } = await import("node:path")
+    const entry = join(
+      dir,
+      "plugins",
+      "node_modules",
+      "@opencode-ai",
+      "plugin",
+      "dist",
+      "index.js",
+    )
+    return await import(pathToFileURL(entry).href)
+  } catch {
+    return null
+  }
+}
+
 export async function buildTools({ input, options } = {}) {
   const definitions = makeToolDefinitions({ input, options })
-  let toolFn
-  let schema
-  try {
-    const sdk = await import("@opencode-ai/plugin")
-    toolFn = sdk.tool
-    schema = sdk.tool?.schema
-  } catch {
-    toolFn = undefined
-  }
+  const sdk = await loadSdk(input)
+  const toolFn = sdk?.tool
+  const schema = sdk?.tool?.schema
 
   const out = {}
   for (const [name, def] of Object.entries(definitions)) {
@@ -319,4 +427,11 @@ export async function buildTools({ input, options } = {}) {
   return out
 }
 
-export const _internal = { toJsonSchema, toZod, normalizeRefs, waitImageTask }
+export const _internal = {
+  toJsonSchema,
+  toZod,
+  normalizeRefs,
+  waitImageTask,
+  waitVideoTask,
+  pollTask,
+}

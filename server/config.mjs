@@ -4,23 +4,31 @@ export const MODEL_ID = "muse-spark"
 export const DEFAULT_BASE = "http://127.0.0.1:18610"
 export const IMAGE_MODEL = "muse-image"
 export const VIDEO_MODEL = "muse-video"
+export const MAX_REFERENCE_IMAGES = 8
 
+/**
+ * 统一地址：去空白、去尾斜杠、去用户多写的 /v1（插件自己会拼 /v1）。
+ */
 export function trimBase(url) {
-  return String(url ?? "").trim().replace(/\/+$/, "")
+  return String(url ?? "")
+    .trim()
+    .replace(/\/+$/, "")
+    .replace(/\/v1$/i, "")
 }
 
 export function sleep(ms, signal) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(signal.reason ?? new Error("aborted"))
-    const t = setTimeout(resolve, ms)
-    signal?.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(t)
-        reject(signal.reason ?? new Error("aborted"))
-      },
-      { once: true },
-    )
+    let timer
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(signal.reason ?? new Error("aborted"))
+    }
+    timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort)
+      resolve()
+    }, ms)
+    signal?.addEventListener("abort", onAbort, { once: true })
   })
 }
 
@@ -50,23 +58,31 @@ export function resolveConfig({ options, input } = {}) {
 export function missingConfigText() {
   return [
     "没有配置 muse2api 连接信息。",
-    "请在 Magpie「设置 → 插件 → muse2api」填写 baseUrl 与 apiKey（也支持环境变量 MUSE2API_BASE_URL / MUSE2API_KEY）。",
-    "baseUrl 例：http://127.0.0.1:18610",
+    "请在 Magpie「插件 → 已安装 → muse2api → 选项」里填 baseUrl 与 apiKey（也支持环境变量 MUSE2API_BASE_URL / MUSE2API_KEY）。",
+    "baseUrl 例：http://127.0.0.1:18610（不要带 /v1）",
   ].join("\n")
 }
 
 export function authHeaders(apiKey) {
-  return { authorization: `Bearer ${apiKey}`, "content-type": "application/json" }
+  const key = String(apiKey ?? "").trim().replace(/^Bearer\s+/i, "")
+  return { authorization: `Bearer ${key}`, "content-type": "application/json" }
 }
 
-export async function requestJson(url, init, ctx) {
-  const timeout = AbortSignal.timeout(50_000)
+export async function requestJson(url, init, ctx, timeoutMs = 50_000) {
+  const timeout = AbortSignal.timeout(Math.max(1_000, Number(timeoutMs) || 50_000))
   const signal = ctx?.abort ? AbortSignal.any([ctx.abort, timeout]) : timeout
   let res
   try {
     res = await fetch(url, { ...init, signal })
   } catch (e) {
-    return { ok: false, status: 0, body: null, text: "", error: e?.message ?? String(e) }
+    const name = e?.name
+    const msg =
+      name === "TimeoutError"
+        ? `请求超时（${Math.round((Number(timeoutMs) || 50_000) / 1000)}s）`
+        : name === "AbortError"
+          ? "请求被取消"
+          : (e?.message ?? String(e))
+    return { ok: false, status: 0, body: null, text: "", error: msg }
   }
   const text = await res.text().catch(() => "")
   let body = null
@@ -79,5 +95,15 @@ export async function requestJson(url, init, ctx) {
 }
 
 export function pickError(r) {
-  return r?.body?.error?.message || r?.body?.error || r?.body?.detail || r?.text?.slice(0, 500) || `HTTP ${r?.status}`
+  if (typeof r?.error === "string" && r.error) return r.error
+  const bodyError = r?.body?.error
+  const fromBody =
+    typeof bodyError === "string" ? bodyError : (bodyError?.message ?? bodyError?.code)
+  return (
+    (typeof fromBody === "string" && fromBody) ||
+    r?.body?.detail ||
+    r?.body?.message ||
+    (r?.text ? r.text.slice(0, 500) : "") ||
+    `HTTP ${r?.status}`
+  )
 }

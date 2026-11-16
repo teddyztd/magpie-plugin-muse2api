@@ -77,21 +77,24 @@ magpie plugin add ./magpie-plugin-muse2api
 
 | 工具 | 入参（必需加粗） | 返回 |
 | --- | --- | --- |
-| `generate_image` | **prompt**、size、aspect_ratio、reference_images、model、extra | `{task_id, status, progress, hint}` |
-| `image_status` | **task_id**、wait_seconds（默认 40，上限 40） | 完成：`{status:"completed", url, size, bytes, revised_prompt}` |
-| `generate_video` | **prompt**、duration、aspect_ratio、size、reference_images、model | `{task_id, status, progress, hint}` |
-| `video_status` | **task_id** | 完成：`{status:"completed", url}` |
+| `generate_image` | **prompt**、size、aspect_ratio、reference_images（≤8 张）、model、extra | `{task_id, status, progress, hint}` |
+| `image_status` | **task_id**、wait_seconds（默认 40，上限 40） | 完成：`{status:"completed", task_id, url, size, kind, bytes, revised_prompt}`；未完成：`{status, progress, task_id, hint}`；出错：`{..., error}` |
+| `generate_video` | **prompt**、duration、aspect_ratio、size、reference_images（≤8 张）、model | `{task_id, status, progress, hint}` |
+| `video_status` | **task_id**、wait_seconds（默认 40，上限 40） | 完成：`{status:"completed", task_id, url}`；未完成：`{status, progress, task_id, hint}`；出错：`{..., error}` |
 
 要点：
 
 - **图片一律异步**：`generate_image` 只提交，立刻返回 `task_id`；再调 `image_status` 取结果。
-  `image_status` 会在工具时限内短轮询（最多 40 秒），拿到就返回 URL，拿不到的返回 `task_id` 让你稍后重查。
-- **视频天然异步**：`generate_video` 提交后返回 `task_id`，视频通常要几分钟，用 `video_status` 轮询。
-- `reference_images` 支持 `http(s)` URL 和本地文件路径（本地文件会被读成 data URL 再提交）。
+  `image_status` 会在工具时限内短轮询（默认最多 40 秒），拿到就返回 URL，没完成的返回 `task_id` 让你稍后重查。
+- **视频天然异步**：`generate_video` 提交后返回 `task_id`，视频通常要几分钟；`video_status` 同样支持
+  `wait_seconds`（默认 40 秒），一次调用内能等到就等到，等不到就再调一次。
+- `reference_images` 支持 `http(s)` URL 和本地文件路径（本地文件会被读成 data URL 再提交，最多 8 张）；
+  本地文件读不到会直接返回可操作的错误，而不是把路径当 URL 发给上游。
 - 返回的 `url` 是 muse2api 的 `/v1/media/<name>`（该路由不鉴权），能直接在浏览器打开 / 下载。
   **如果 URL 打不开**，检查 muse2api 的 `PUBLIC_BASE`：它生成的是 `PUBLIC_BASE/v1/media/...`，
   远端访问时必须设成外部可达地址。
-- Magpie 每个工具最多跑 55 秒，超时会 abort；所以不要把视频轮询塞进一次调用。
+- Magpie 每个工具最多跑 55 秒，超时会 abort；因此 `image_status` / `video_status` 的轮询预算默认
+  40 秒（`wait_seconds` 上限也是 40），单次请求超时按剩余预算截断，不会把一次调用拖过宿主上限。
 
 ## 验证是否可用
 
@@ -107,7 +110,8 @@ magpie plugin add ./magpie-plugin-muse2api
 
    > 用 muse2api 生成一段 5 秒的海浪视频
 
-   先拿 `task_id`，反复 `muse2api_video_status` 直到 `completed` 并拿到 `.mp4` 链接。
+   先拿 `task_id`，再调 `muse2api_video_status`；它会在 40 秒内轮询，没完成就再调一次，直到 `completed`
+   并拿到 `.mp4` 链接。
 
 ## 故障排查
 
@@ -115,7 +119,7 @@ magpie plugin add ./magpie-plugin-muse2api
 | --- | --- |
 | 登录报「API key 无效（401）」 | 核对 `MUSE2API_KEY` 是否与 muse2api 实例一致（注意 muse2api 的 `MUSE2API_KEY` 为空时是不校验的，这时填任何 key 都能过） |
 | 登录报「无法连接 …/v1/models」 | 实例没起 / 地址写错 / 端口不是 18610；先 `curl` 验一遍 |
-| 对话 404 或 400 | `baseURL` 少了 / 多了 `/v1`；本插件固定用 `<地址>/v1`，登录时地址不要带 `/v1` |
+| 对话 404 或 400 | `baseURL` 拼错了；本插件固定用 `<地址>/v1`，登录时地址**不要带** `/v1`（带了会被 validate 拦下） |
 | 工具说「没有配置 muse2api 连接信息」 | 去 **插件 → 已安装 → muse2api → 选项** 填 `baseUrl` / `apiKey`，或设环境变量后重启 Magpie |
 | 工具返回 401 | 插件选项里的 `apiKey` 与 provider 登录用的不是同一个 |
 | 图片 / 视频链接打不开 | muse2api 的 `PUBLIC_BASE` 不是外部可达地址；图片本身生成成功时任务里也有 `bytes` / `size` 可核对 |
