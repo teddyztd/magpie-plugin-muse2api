@@ -3,7 +3,11 @@ import {
   MODEL_ID,
   PROVIDER_ID,
   PROVIDER_NAME,
+  apiBase,
   authHeaders,
+  checkBaseUrl,
+  modelsUrl,
+  normalizeKey,
   trimBase,
 } from "./config.mjs"
 
@@ -33,7 +37,7 @@ export function buildConfigHook() {
       name: was.name ?? PROVIDER_NAME,
       npm: was.npm ?? "@ai-sdk/openai-compatible",
       // 占位；loader 会用登录时填的 baseUrl 覆盖。
-      api: was.api ?? `${DEFAULT_BASE}/v1`,
+      api: was.api ?? apiBase(DEFAULT_BASE),
       models: { ...baseModels(), ...(was.models ?? {}) },
     }
   }
@@ -45,19 +49,7 @@ const prompts = [
     key: "baseUrl",
     message: "muse2api 地址（不含 /v1）",
     placeholder: "http://127.0.0.1:18610",
-    validate: (v) => {
-      const raw = String(v ?? "").trim()
-      try {
-        const u = new URL(raw)
-        if (u.protocol !== "http:" && u.protocol !== "https:") {
-          return "需要 http:// 或 https:// 开头"
-        }
-        if (/\/v1\/?$/i.test(u.pathname)) return "地址不要带 /v1（插件会自动补）"
-        return undefined
-      } catch {
-        return "不是合法 URL"
-      }
-    },
+    validate: (v) => checkBaseUrl(v),
   },
   {
     type: "password",
@@ -81,21 +73,19 @@ export function buildAuthHook() {
     ],
     async authorize(inputs) {
       const baseUrl = trimBase(inputs?.baseUrl)
-      const apiKey = String(inputs?.apiKey ?? inputs?.key ?? "")
-        .trim()
-        .replace(/^Bearer\s+/i, "")
+      const apiKey = normalizeKey(inputs?.apiKey ?? inputs?.key)
       if (!baseUrl) return { type: "failed", error: "请填写 muse2api 地址" }
       if (!apiKey) return { type: "failed", error: "请填写 MUSE2API_KEY" }
       let res
       try {
-        res = await fetch(`${baseUrl}/v1/models`, {
-          headers: { authorization: `Bearer ${apiKey}` },
+        res = await fetch(modelsUrl(baseUrl), {
+          headers: authHeaders(apiKey),
           signal: AbortSignal.timeout(10_000),
         })
       } catch (e) {
         return {
           type: "failed",
-          error: `无法连接 ${baseUrl}/v1/models：${e?.message ?? e}`,
+          error: `无法连接 ${modelsUrl(baseUrl)}：${e?.message ?? e}`,
         }
       }
       if (res.status === 401 || res.status === 403) {
@@ -113,7 +103,7 @@ export function buildAuthHook() {
       const auth = await getAuth()
       if (auth?.type !== "api") return {}
       const baseUrl = trimBase(auth.metadata?.baseUrl) || DEFAULT_BASE
-      return { baseURL: `${baseUrl}/v1`, apiKey: auth.key }
+      return { baseURL: apiBase(baseUrl), apiKey: auth.key }
     },
   }
 }
@@ -127,7 +117,7 @@ export function buildProviderHook() {
       const baseUrl = trimBase(auth.metadata?.baseUrl) || DEFAULT_BASE
       let body
       try {
-        const res = await fetch(`${baseUrl}/v1/models`, {
+        const res = await fetch(modelsUrl(baseUrl), {
           headers: authHeaders(auth.key),
           signal: AbortSignal.timeout(8_000),
         })

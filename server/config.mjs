@@ -16,6 +16,38 @@ export function trimBase(url) {
     .replace(/\/v1$/i, "")
 }
 
+/** 规约后的地址 + /v1：登录、加载器、provider.models 与工具都从这里拼。 */
+export function apiBase(url) {
+  return `${trimBase(url)}/v1`
+}
+
+export function modelsUrl(url) {
+  return `${apiBase(url)}/models`
+}
+
+/** 用户填的地址是否可用；返回错误文案或 undefined。登录表单与 authorize 共用。 */
+export function checkBaseUrl(value) {
+  const raw = String(value ?? "").trim()
+  let u
+  try {
+    u = new URL(raw)
+  } catch {
+    return "不是合法 URL"
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") {
+    return "需要 http:// 或 https:// 开头"
+  }
+  if (/\/v1\/?$/i.test(u.pathname)) return "地址不要带 /v1（插件会自动补）"
+  return undefined
+}
+
+/** 去掉用户粘贴时带上的 Bearer 前缀。 */
+export function normalizeKey(value) {
+  return String(value ?? "")
+    .trim()
+    .replace(/^Bearer\s+/i, "")
+}
+
 export function sleep(ms, signal) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(signal.reason ?? new Error("aborted"))
@@ -64,8 +96,7 @@ export function missingConfigText() {
 }
 
 export function authHeaders(apiKey) {
-  const key = String(apiKey ?? "").trim().replace(/^Bearer\s+/i, "")
-  return { authorization: `Bearer ${key}`, "content-type": "application/json" }
+  return { authorization: `Bearer ${normalizeKey(apiKey)}`, "content-type": "application/json" }
 }
 
 export async function requestJson(url, init, ctx, timeoutMs = 50_000) {

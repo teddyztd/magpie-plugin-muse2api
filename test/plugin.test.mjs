@@ -83,6 +83,12 @@ describe("auth 钩子", () => {
     expect(String(bad.error)).toContain("401")
   })
 
+  test("authorize 接受带 /v1 的地址（与旧行为一致，规约后保存）", async () => {
+    const ok = await buildAuthHook().authorize({ baseUrl: `${mock.url}/v1`, apiKey: mock.apiKey })
+    expect(ok.type).toBe("success")
+    expect(ok.metadata.baseUrl).toBe(mock.url)
+  })
+
   test("authorize 对连不上的地址失败", async () => {
     const auth = buildAuthHook()
     const bad = await auth.authorize({ baseUrl: "http://127.0.0.1:1", apiKey: "x" })
@@ -231,6 +237,18 @@ describe("输入校验与边界", () => {
     )
     expect(String(await defs().generate_video.execute({}, {}))).toContain("prompt 不能为空")
     expect(mock.state.requests.length).toBe(before)
+  })
+
+  test("未配置时也先报入参错误，而不是直接报缺配置", async () => {
+    cleanupEnv()
+    const bare = makeToolDefinitions({})
+    expect(String(await bare.generate_image.execute({ prompt: "   " }, {}))).toContain(
+      "prompt 不能为空",
+    )
+    const nine = Array.from({ length: 9 }, (_, i) => `https://example.com/${i}.png`)
+    expect(
+      String(await bare.generate_video.execute({ prompt: "x", reference_images: nine }, {})),
+    ).toContain("最多 8 张")
   })
 
   test("参考图超过 8 张拒绝", async () => {
