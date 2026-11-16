@@ -4,13 +4,14 @@ export { makeToolDefinitions } from "./tools/definitions.mjs"
 
 import { normalizeRefs } from "./tools/refs.mjs"
 import { toJsonSchema, toZod } from "./tools/schema.mjs"
-import { pollTask, waitImageTask, waitVideoTask } from "./tools/tasks.mjs"
+import { pollTask, queryVideoTask, taskView, waitImageTask } from "./tools/tasks.mjs"
 
 export const _internal = {
   toJsonSchema,
   toZod,
   normalizeRefs,
   waitImageTask,
-  waitVideoTask,
+  queryVideoTask,
   pollTask,
+  taskView,
 }

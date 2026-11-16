@@ -43,6 +43,10 @@ export function buildConfigHook() {
   }
 }
 
+// 登录卡片自己的图标（与 package.json 里的插件列表图标分开）：深色底 + 校验徽记。
+export const AUTH_ICON =
+  "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTQiIGZpbGw9IiMxMTE4MjciLz48Y2lyY2xlIGN4PSIzMiIgY3k9IjMyIiByPSIxNyIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMzhiZGY4IiBzdHJva2Utd2lkdGg9IjQiLz48cGF0aCBkPSJNMjQgMzNsNiA2IDExLTEyIiBmaWxsPSJub25lIiBzdHJva2U9IiNhN2YzZDAiIHN0cm9rZS13aWR0aD0iNSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+PC9zdmc+"
+
 const prompts = [
   {
     type: "text",
@@ -63,6 +67,7 @@ export function buildAuthHook() {
   return {
     provider: PROVIDER_ID,
     maxConcurrency: 1,
+    icon: AUTH_ICON,
     methods: [
       {
         type: "api",

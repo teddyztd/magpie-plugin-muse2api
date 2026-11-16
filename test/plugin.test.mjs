@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { readFileSync } from "node:fs"
 import { mkdtemp, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -142,11 +143,13 @@ describe("工具配置来源", () => {
   test("未配置时工具给出可操作的提示", async () => {
     cleanupEnv()
     const tool = makeToolDefinitions({})
-    const out = await tool.generate_image.execute({ prompt: "x" }, {})
-    expect(out).toBe(missingConfigText())
-    expect(out).toContain("MUSE2API_BASE_URL")
-    const video = await tool.video_status.execute({ task_id: "x" }, {})
-    expect(video).toBe(missingConfigText())
+    const out = JSON.parse(await tool.generate_image.execute({ prompt: "x" }, {}))
+    expect(out.ok).toBe(false)
+    expect(out.error).toBe(missingConfigText())
+    expect(out.error).toContain("MUSE2API_BASE_URL")
+    const video = JSON.parse(await tool.video_status.execute({ task_id: "x" }, {}))
+    expect(video.ok).toBe(false)
+    expect(video.error).toBe(missingConfigText())
   })
 })
 
@@ -206,7 +209,7 @@ describe("视频工具", () => {
   const defs = () =>
     makeToolDefinitions({ options: { baseUrl: mock.url, apiKey: mock.apiKey } })
 
-  test("generate_video 立即返回 task_id，video_status 完成时给 URL", async () => {
+  test("generate_video 立即返回 task_id，video_status 单次查询后给 URL", async () => {
     const task = JSON.parse(
       await defs().generate_video.execute(
         { prompt: "ocean wave", duration: 5, aspect_ratio: "16:9" },
@@ -214,15 +217,38 @@ describe("视频工具", () => {
       ),
     )
     expect(task.task_id).toMatch(/^vid_/)
+    expect(task.ok).toBe(true)
     const sent = mock.state.videoPosts.at(-1)
     expect(sent.model).toBe("muse-video")
     expect(sent.duration).toBe(5)
 
-    const out = JSON.parse(
-      await defs().video_status.execute({ task_id: task.task_id, wait_seconds: 5 }, {}),
-    )
+    // mock 的 videoCompleteAfter=1：第一次查询还是 running，第二次才 completed
+    const first = JSON.parse(await defs().video_status.execute({ task_id: task.task_id }, {}))
+    expect(first.ok).toBe(true)
+    expect(first.status).toBe("running")
+    expect(first.hint).toBeTruthy()
+
+    const out = JSON.parse(await defs().video_status.execute({ task_id: task.task_id }, {}))
+    expect(out.ok).toBe(true)
     expect(out.status).toBe("completed")
     expect(out.url).toContain("/v1/media/vid_")
+  })
+
+  test("video_status 每次只发起一次请求（不在工具内轮询）", async () => {
+    const task = JSON.parse(await defs().generate_video.execute({ prompt: "wave" }, {}))
+    const before = mock.state.requests.filter((r) =>
+      r.path.startsWith(`/v1/videos/${task.task_id}`),
+    ).length
+    await defs().video_status.execute({ task_id: task.task_id }, {})
+    const after = mock.state.requests.filter((r) =>
+      r.path.startsWith(`/v1/videos/${task.task_id}`),
+    ).length
+    expect(after - before).toBe(1)
+  })
+
+  test("video_status 的入参里没有 wait_seconds", () => {
+    const args = makeToolDefinitions({}).video_status.argsSpec
+    expect(Object.keys(args)).toEqual(["task_id"])
   })
 })
 
@@ -285,6 +311,135 @@ describe("输入校验与边界", () => {
   test("validate 拒绝带 /v1 的地址", () => {
     const validate = buildAuthHook().methods[0].prompts[0].validate
     expect(validate("http://127.0.0.1:18610/v1")).toBeTruthy()
+  })
+
+  test("auth 钩子带自己的登录图标（与插件列表图标分开）", () => {
+    const auth = buildAuthHook()
+    expect(auth.icon).toStartWith("data:image/svg+xml;base64,")
+    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"))
+    expect(auth.icon).not.toBe(pkg.magpie.icon)
+  })
+})
+
+describe("返回契约：一律 JSON", () => {
+  const defs = () =>
+    makeToolDefinitions({ options: { baseUrl: mock.url, apiKey: mock.apiKey } })
+  const nine = Array.from({ length: 9 }, (_, i) => `https://example.com/${i}.png`)
+
+  const failing = {
+    "缺配置 generate_image": () => {
+      cleanupEnv()
+      return makeToolDefinitions({}).generate_image.execute({ prompt: "x" }, {})
+    },
+    "缺配置 image_status": () => {
+      cleanupEnv()
+      return makeToolDefinitions({}).image_status.execute({ task_id: "x" }, {})
+    },
+    "空 prompt": () => defs().generate_image.execute({ prompt: "  " }, {}),
+    "参考图不是数组": () => defs().generate_image.execute({ prompt: "x", reference_images: "u" }, {}),
+    "参考图超张数": () => defs().generate_video.execute({ prompt: "x", reference_images: nine }, {}),
+    "缺 task_id": () => defs().video_status.execute({}, {}),
+    "连接失败": () =>
+      makeToolDefinitions({ options: { baseUrl: "http://127.0.0.1:1", apiKey: "k" } })
+        .generate_image.execute({ prompt: "x" }, {}),
+    "上游 401": () =>
+      makeToolDefinitions({ options: { baseUrl: mock.url, apiKey: "bad" } })
+        .generate_video.execute({ prompt: "x" }, {}),
+    "任务 404": () => defs().image_status.execute({ task_id: "nope", wait_seconds: 1 }, {}),
+  }
+
+  for (const [name, run] of Object.entries(failing)) {
+    test(`${name} → 合法 JSON 且 ok:false`, async () => {
+      const raw = await run()
+      expect(typeof raw).toBe("string")
+      const out = JSON.parse(raw)
+      expect(out.ok).toBe(false)
+      expect(typeof out.status).toBe("string")
+      expect(typeof out.error).toBe("string")
+    })
+  }
+
+  test("成功路径同样是合法 JSON 且 ok:true", async () => {
+    const d = defs()
+    const img = JSON.parse(await d.generate_image.execute({ prompt: "cat" }, {}))
+    expect(img.ok).toBe(true)
+    const imgOut = JSON.parse(
+      await d.image_status.execute({ task_id: img.task_id, wait_seconds: 5 }, {}),
+    )
+    expect(imgOut.ok).toBe(true)
+    const vid = JSON.parse(await d.generate_video.execute({ prompt: "wave" }, {}))
+    expect(vid.ok).toBe(true)
+    const vidOut = JSON.parse(await d.video_status.execute({ task_id: vid.task_id }, {}))
+    expect(typeof vidOut.ok).toBe("boolean")
+  })
+
+  test("上游错误带 http_status", async () => {
+    const out = JSON.parse(
+      await makeToolDefinitions({ options: { baseUrl: mock.url, apiKey: "bad" } })
+        .generate_image.execute({ prompt: "x" }, {}),
+    )
+    expect(out.http_status).toBe(401)
+    expect(out.baseUrl).toBe(mock.url)
+  })
+})
+
+describe("参考图体积上限", () => {
+  test("超过单张上限时本地拦下", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "muse2api-size-"))
+    const file = join(dir, "big.png")
+    await writeFile(file, Buffer.alloc(64))
+    const { error, refs } = await toolsInternal.normalizeRefs([file], {
+      maxImageBytes: 32,
+      maxTotalBytes: 1024,
+    })
+    expect(error).toContain("单张上限")
+    expect(refs).toHaveLength(0)
+  })
+
+  test("超过合计上限时本地拦下", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "muse2api-total-"))
+    const a = join(dir, "a.png")
+    const b = join(dir, "b.png")
+    await writeFile(a, Buffer.alloc(24))
+    await writeFile(b, Buffer.alloc(24))
+    const { error } = await toolsInternal.normalizeRefs([a, b], {
+      maxImageBytes: 1024,
+      maxTotalBytes: 32,
+    })
+    expect(error).toContain("合计")
+  })
+
+  test("data URL 按解码后的字节统计", async () => {
+    const payload = Buffer.alloc(64).toString("base64")
+    const { error } = await toolsInternal.normalizeRefs([`data:image/png;base64,${payload}`], {
+      maxImageBytes: 32,
+    })
+    expect(error).toContain("单张上限")
+  })
+
+  test("8 张本地图正常通过", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "muse2api-eight-"))
+    const files = []
+    for (let i = 0; i < 8; i += 1) {
+      const file = join(dir, `r${i}.png`)
+      await writeFile(file, Buffer.alloc(16))
+      files.push(file)
+    }
+    const { refs, failed, error } = await toolsInternal.normalizeRefs(files)
+    expect(error).toBeUndefined()
+    expect(failed).toHaveLength(0)
+    expect(refs).toHaveLength(8)
+  })
+
+  test("超限时不向上游发请求", async () => {
+    const before = mock.state.requests.length
+    const nine = Array.from({ length: 9 }, (_, i) => `https://example.com/${i}.png`)
+    const out = JSON.parse(
+      await makeToolDefinitions({ options: { baseUrl: mock.url, apiKey: mock.apiKey } })
+        .generate_image.execute({ prompt: "x", reference_images: nine }, {}),
+    )
+    expect(out.ok).toBe(false)
+    expect(mock.state.requests.length).toBe(before)
   })
 })
 

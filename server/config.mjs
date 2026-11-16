@@ -5,6 +5,10 @@ export const DEFAULT_BASE = "http://127.0.0.1:18610"
 export const IMAGE_MODEL = "muse-image"
 export const VIDEO_MODEL = "muse-video"
 export const MAX_REFERENCE_IMAGES = 8
+// 与 muse2api 上游同量级（engine.py: MAX_REFERENCE_IMAGE_BYTES / MAX_REFERENCE_TOTAL_BYTES），
+// 在本地先拦，避免把超大图交给上游换一个 413。
+export const MAX_REFERENCE_IMAGE_BYTES = 40 * 1024 * 1024
+export const MAX_REFERENCE_TOTAL_BYTES = 100 * 1024 * 1024
 
 /**
  * 统一地址：去空白、去尾斜杠、去用户多写的 /v1（插件自己会拼 /v1）。

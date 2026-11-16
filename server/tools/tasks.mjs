@@ -1,62 +1,52 @@
 import { apiBase, authHeaders, pickError, requestJson, sleep } from "../config.mjs"
+import { failJson, okJson } from "./result.mjs"
 
-function pendingView(body) {
-  return { status: body?.status ?? "queued", progress: body?.progress }
+const DONE = ["completed", "succeeded", "success"]
+const BAD = ["failed", "error", "cancelled", "canceled"]
+const PENDING_HINT = "任务仍在生成，稍后再调用（传同一个 task_id）"
+
+/** 完成态的三种 URL 形状：data[0].url / url / result.url 等，各工具自己挑。 */
+function mapImageCompleted(taskId, body) {
+  const data = Array.isArray(body.data) ? body.data[0] : undefined
+  return {
+    task_id: taskId,
+    url: data?.url ?? body.url ?? body.result?.url,
+    size: data?.size ?? body.size,
+    kind: data?.kind ?? body.kind,
+    bytes: data?.bytes ?? body.bytes,
+    revised_prompt: data?.revised_prompt,
+  }
 }
 
-/**
- * 轮询任务直到完成、失败、或预算耗尽。
- * 每次请求的超时都按剩余预算截断，保证总墙钟 < 工具 55s 上限。
- */
-export async function pollTask({ url, apiKey, taskId, budgetMs, ctx, mapCompleted }) {
-  const deadline = Date.now() + budgetMs
-  let last = {}
-  for (;;) {
-    const left = deadline - Date.now()
-    if (left <= 0) {
-      return {
-        ...pendingView(last),
+function mapVideoCompleted(taskId, body) {
+  const out = { task_id: taskId, url: body.url ?? body.video?.url ?? body.result?.url }
+  if (body.size) out.size = body.size
+  if (body.duration) out.duration = body.duration
+  return out
+}
+
+/** 把一次任务查询的响应翻成对外 JSON；未完成也是正常返回（带 hint）。 */
+export function taskView(body, taskId, mapCompleted) {
+  const status = body?.status ?? "queued"
+  if (DONE.includes(status)) {
+    const done = mapCompleted(body)
+    if (!done.url) {
+      return failJson({
+        status,
         task_id: taskId,
-        hint: "仍在生成，稍后再调用（传同一个 task_id）",
-      }
+        error: "任务已完成但没有返回 URL（检查 muse2api 的 PUBLIC_BASE 是否可达）",
+      })
     }
-    const r = await requestJson(url, { headers: authHeaders(apiKey) }, ctx, Math.min(left, 10_000))
-    if (r.status === 0) {
-      return { ...pendingView(last), task_id: taskId, error: `查询失败：${r.error}` }
-    }
-    if (!r.ok) {
-      return {
-        ...pendingView(last),
-        task_id: taskId,
-        error: `查询失败（HTTP ${r.status}）：${pickError(r)}`,
-      }
-    }
-    const body = r.body ?? {}
-    last = body
-    if (["completed", "succeeded", "success"].includes(body.status)) {
-      return mapCompleted(body)
-    }
-    if (["failed", "error", "cancelled", "canceled"].includes(body.status)) {
-      return {
-        status: body.status,
-        ...pendingView(body),
-        task_id: taskId,
-        error: body.error ?? body.message ?? "生成失败",
-      }
-    }
-    if (deadline - Date.now() <= 1500) {
-      return {
-        ...pendingView(body),
-        task_id: taskId,
-        hint: "仍在生成，稍后再调用（传同一个 task_id）",
-      }
-    }
-    try {
-      await sleep(1500, ctx?.abort)
-    } catch (e) {
-      return { ...pendingView(body), task_id: taskId, error: `已取消：${e?.message ?? e}` }
-    }
+    return okJson({ status: "completed", ...done })
   }
+  if (BAD.includes(status)) {
+    return failJson({
+      status,
+      task_id: taskId,
+      error: body?.error ?? body?.message ?? "生成失败",
+    })
+  }
+  return okJson({ status, progress: body?.progress, task_id: taskId, hint: PENDING_HINT })
 }
 
 function imageTaskUrl(baseUrl, taskId) {
@@ -67,29 +57,48 @@ function videoTaskUrl(baseUrl, taskId) {
   return `${apiBase(baseUrl)}/videos/${encodeURIComponent(taskId)}`
 }
 
-function mapImageCompleted(taskId, body) {
-  const data = Array.isArray(body.data) ? body.data[0] : undefined
-  const url = data?.url ?? body.url ?? body.result?.url
-  const out = {
-    status: "completed",
+function failure(result, taskId, what) {
+  if (result.status === 0) return failJson({ task_id: taskId, error: `${what}失败：${result.error}` })
+  return failJson({
     task_id: taskId,
-    url,
-    size: data?.size ?? body.size,
-    kind: data?.kind ?? body.kind,
-    bytes: data?.bytes ?? body.bytes,
-    revised_prompt: data?.revised_prompt,
-  }
-  if (!url) out.error = "任务已完成但没有返回 URL（检查 muse2api 的 PUBLIC_BASE）"
-  return out
+    http_status: result.status,
+    error: `${what}失败（HTTP ${result.status}）：${pickError(result)}`,
+  })
 }
 
-function mapVideoCompleted(taskId, body) {
-  const url = body.url ?? body.video?.url ?? body.result?.url
-  const out = { status: "completed", task_id: taskId, url }
-  if (body.size) out.size = body.size
-  if (body.duration) out.duration = body.duration
-  if (!url) out.error = "任务已完成但没有返回 URL（检查 muse2api 的 PUBLIC_BASE）"
-  return out
+/**
+ * 轮询任务直到完成、失败或预算耗尽；每次请求超时按剩余预算截断，
+ * 保证总墙钟留在工具 55s 上限内。图片用（视频只在工具外再查）。
+ */
+export async function pollTask({ url, apiKey, taskId, budgetMs, ctx, mapCompleted }) {
+  const deadline = Date.now() + budgetMs
+  let last = {}
+  for (;;) {
+    const left = deadline - Date.now()
+    if (left <= 0) {
+      return okJson({
+        status: last?.status ?? "queued",
+        progress: last?.progress,
+        task_id: taskId,
+        hint: PENDING_HINT,
+      })
+    }
+    const r = await requestJson(url, { headers: authHeaders(apiKey) }, ctx, Math.min(left, 10_000))
+    if (r.status === 0 || !r.ok) return failure(r, taskId, "查询")
+    const body = r.body ?? {}
+    last = body
+    if (DONE.includes(body.status) || BAD.includes(body.status)) {
+      return taskView(body, taskId, mapCompleted)
+    }
+    if (deadline - Date.now() <= 1500) {
+      return okJson({ status: body.status ?? "queued", progress: body.progress, task_id: taskId, hint: PENDING_HINT })
+    }
+    try {
+      await sleep(1500, ctx?.abort)
+    } catch (e) {
+      return failJson({ task_id: taskId, error: `已取消：${e?.message ?? e}` })
+    }
+  }
 }
 
 export async function waitImageTask(baseUrl, apiKey, taskId, budgetMs, ctx) {
@@ -103,13 +112,14 @@ export async function waitImageTask(baseUrl, apiKey, taskId, budgetMs, ctx) {
   })
 }
 
-export async function waitVideoTask(baseUrl, apiKey, taskId, budgetMs, ctx) {
-  return pollTask({
-    url: videoTaskUrl(baseUrl, taskId),
-    apiKey,
-    taskId,
-    budgetMs,
+/** 视频只查一次：视频要几分钟，工具内等不起（每次调用最多 55s）。 */
+export async function queryVideoTask(baseUrl, apiKey, taskId, ctx) {
+  const r = await requestJson(
+    videoTaskUrl(baseUrl, taskId),
+    { headers: authHeaders(apiKey) },
     ctx,
-    mapCompleted: (body) => mapVideoCompleted(taskId, body),
-  })
+    20_000,
+  )
+  if (r.status === 0 || !r.ok) return failure(r, taskId, "查询")
+  return taskView(r.body ?? {}, taskId, (body) => mapVideoCompleted(taskId, body))
 }

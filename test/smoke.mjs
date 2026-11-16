@@ -25,27 +25,38 @@ try {
   console.log("tools:", names.join(", "))
   ok.push(names.join(",") === "generate_image,generate_video,image_status,video_status")
 
-  const submitted = JSON.parse(await tools.generate_image.execute({ prompt: "a blue cat", aspect_ratio: "1:1" }, ctx))
+  const submitted = JSON.parse(
+    await tools.generate_image.execute({ prompt: "a blue cat", aspect_ratio: "1:1" }, ctx),
+  )
   console.log("image submit:", JSON.stringify(submitted))
-  ok.push(submitted.status === "queued" && submitted.task_id === "img_1")
+  ok.push(submitted.ok === true && submitted.status === "queued" && submitted.task_id === "img_1")
 
-  const img = JSON.parse(await tools.image_status.execute({ task_id: submitted.task_id, wait_seconds: 20 }, ctx))
+  const img = JSON.parse(
+    await tools.image_status.execute({ task_id: submitted.task_id, wait_seconds: 20 }, ctx),
+  )
   console.log("image status:", JSON.stringify(img))
-  ok.push(img.status === "completed" && img.url === `${mock.url}/v1/media/img_1.png`)
+  ok.push(img.ok === true && img.status === "completed" && img.url === `${mock.url}/v1/media/img_1.png`)
 
-  const vsub = JSON.parse(await tools.generate_video.execute({ prompt: "waves at dusk", duration: 5 }, ctx))
+  const vsub = JSON.parse(
+    await tools.generate_video.execute({ prompt: "waves at dusk", duration: 5 }, ctx),
+  )
   console.log("video submit:", JSON.stringify(vsub))
-  ok.push(vsub.status === "queued" && vsub.task_id === "vid_1")
+  ok.push(vsub.ok === true && vsub.status === "queued" && vsub.task_id === "vid_1")
 
-  const vid = JSON.parse(await tools.video_status.execute({ task_id: vsub.task_id, wait_seconds: 20 }, ctx))
-  console.log("video status:", JSON.stringify(vid))
-  ok.push(vid.status === "completed" && vid.url === `${mock.url}/v1/media/vid_1.mp4`)
+  // video_status 是单次查询：mock 第一次返回 running，第二次才 completed
+  const vpending = JSON.parse(await tools.video_status.execute({ task_id: vsub.task_id }, ctx))
+  console.log("video status #1:", JSON.stringify(vpending))
+  ok.push(vpending.ok === true && vpending.status === "running")
 
-  // 未配置时的可操作提示
+  const vid = JSON.parse(await tools.video_status.execute({ task_id: vsub.task_id }, ctx))
+  console.log("video status #2:", JSON.stringify(vid))
+  ok.push(vid.ok === true && vid.status === "completed" && vid.url === `${mock.url}/v1/media/vid_1.mp4`)
+
+  // 未配置时的可操作提示（JSON 契约）
   const bare = await Muse2ApiPlugin({ directory: process.cwd(), magpie: { option: () => "" } }, {})
-  const bareMsg = await bare.tool.generate_image.execute({ prompt: "x" }, ctx)
-  console.log("unconfigured:", String(bareMsg).split("\n")[0])
-  ok.push(String(bareMsg).includes("没有配置 muse2api 连接信息"))
+  const bareMsg = JSON.parse(await bare.tool.generate_image.execute({ prompt: "x" }, ctx))
+  console.log("unconfigured:", String(bareMsg.error).split("\n")[0])
+  ok.push(bareMsg.ok === false && String(bareMsg.error).includes("没有配置 muse2api 连接信息"))
 } finally {
   await mock.close()
 }

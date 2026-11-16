@@ -112,23 +112,30 @@ Magpie GUI ──登录──> authorize(baseUrl, apiKey) ──GET /v1/models�
   `("apiKey")` → `process.env.MUSE2API_BASE_URL` / `MUSE2API_KEY`。全缺时返回可操作错误文本
   （指明在 Magpie 设置 → 插件 → muse2api 中填写）。
 - 每个 `execute` 用 `AbortSignal.any([ctx.abort, AbortSignal.timeout(50_000)])` 兜住 55s 上限。
-- 返回值：JSON 字符串（Magpie 把对象以 JSON 发回，这里显式 `JSON.stringify` 保证可读）。
+- 返回契约：**任何一次调用都返回可 `JSON.parse` 的字符串**（Magpie 把对象以 JSON 发回，这里显式
+  `JSON.stringify` 保证可读）。成功为 `{ ok: true, … }`；失败统一为
+  `{ ok: false, status, error, … }`，按需带 `baseUrl` / `task_id` / `http_status` / `field` / `hint`。
+  不存在「错误返回中文纯文本」这一路。
 
 `generate_image`：
 
 - 参数：`prompt`（必填）、`size?`、`aspect_ratio?`、`reference_images?`（`string[]`，本地路径或 URL；
   本地路径转 `data:` URL 后放 `images`）、`model?`（默认 `muse-image`）、`extra?`。
+- 参考图在本地先拦：最多 8 张，单张 ≤40 MiB、合计 ≤100 MiB（与 muse2api 上游 `engine.py` 的
+  `MAX_REFERENCE_IMAGE_BYTES` / `MAX_REFERENCE_TOTAL_BYTES` 同量级，base64 按解码后字节算）；
+  超限时请求不发出，直接返回可操作的 JSON 错误。
 - 请求：`POST ${base}/v1/images/tasks`，body 至少 `{ prompt, model, async: true }`，参考图放
   `images` / `reference_image`（依据 `ImageRequest` 字段）。
-- 返回：`{ task_id, status, progress, hint: "调用 image_status 取结果" }`。
+- 返回：`{ ok: true, task_id, status, progress, hint: "调用 image_status 取结果" }`。
 
 `image_status`：
 
 - 参数：`task_id`（必填）、`wait_seconds?`（默认 40，上限 40）。
 - 请求：`GET ${base}/v1/images/tasks/{task_id}`，每 1.5s 一次，直到 `status === "completed"` 或
   预算耗尽。
-- 完成：返回 `{ status: "completed", url: data[0].url, size, kind, bytes, revised_prompt }`；
-  未完成：返回 `{ status, progress, task_id, hint }`；失败：返回 `{ status, error }`。
+- 完成：返回 `{ ok: true, status: "completed", task_id, url: data[0].url, size, kind, bytes,
+  revised_prompt }`；未完成：`{ ok: true, status, progress, task_id, hint }`；失败：
+  `{ ok: false, status, error, task_id?, http_status? }`。
 
 `generate_video`：
 
@@ -136,15 +143,15 @@ Magpie GUI ──登录──> authorize(baseUrl, apiKey) ──GET /v1/models�
   （默认 `muse-video`）。
 - 请求：`POST ${base}/v1/videos/generations`，body `{ prompt, model, duration?, aspect_ratio?,
   size?, images? }`。
-- 返回：`{ task_id, status, progress, hint: "调用 video_status 取结果" }`（视频通常数分钟，不在
-  工具内轮询）。
+- 返回：`{ ok: true, task_id, status, progress, hint: "调用 video_status 取结果（视频通常数分钟，
+  隔一会儿再查）" }`（不在工具内轮询）。
 
 `video_status`：
 
-- 参数：`task_id`（必填）。
-- 请求：`GET ${base}/v1/videos/{task_id}`。
-- 完成：`{ status: "completed", url: task.url || task.video?.url || task.result?.url }`；
-  否则 `{ status, progress, task_id, hint }`。
+- 参数：只有 `task_id`（必填）；**单次查询，不在工具内 sleep / 循环**。
+- 请求：`GET ${base}/v1/videos/{task_id}`，一次。
+- 完成：`{ ok: true, status: "completed", task_id, url: task.url || task.video?.url || task.result?.url }`；
+  否则 `{ ok: true, status, progress, task_id, hint }`；失败：`{ ok: false, status, error, task_id }`。
 
 ### 与 muse-web 的关系
 
@@ -167,8 +174,13 @@ README 明确：本插件**替代** `github:JohnWangggg/magpie-muse-web`（两�
   3. `provider.models`：mock `/v1/models` 返回三条 → 只暴露 `muse-spark`；mock 500 → 回退静态。
   4. `generate_image`：断言请求体含 `prompt` 与 `async: true`，返回 `task_id`。
   5. `image_status`：mock 先 `queued` 后 `completed` → 返回 `url`。
-  6. `generate_video` / `video_status`：同上模式，完成时取 `url`。
-  7. 缺配置：不设 options/env → 返回含“插件选项”的可操作错误。
+  6. `generate_video` / `video_status`：提交拿 `task_id`；`video_status` 每次只发一次请求（计数差 1），
+     第一次 running、第二次 completed 并取 `url`。
+  7. 返回契约：四个工具的成功与全部失败路径（缺配置、空 prompt、参考图类型/张数/体积、连接失败、
+     上游 401、任务 404、完成但无 URL）逐条 `JSON.parse` 成功，失败含 `ok:false` / `status` / `error`。
+  8. 参考图体积：超张数、超单张、超合计、data URL 按解码字节、正常 8 张通过、超限不发请求。
+  9. `auth.icon` 存在且与 `package.json` 的 `magpie.icon` 不同。
+  10. 缺配置：不设 options/env → 返回含“插件选项”的可操作 JSON 错误。
 - 只测插件导出的钩子与工具，不测 muse2api 内部（那是上游）。
 - 真实验收（用户侧）：Magpie GUI 安装 → 登录填地址与 key → `provider test` 通过 → 对话 →
   让 agent 调 `generate_image` / `image_status`，确认返回 `/v1/media/...` 直链可打开。

@@ -1,12 +1,22 @@
-import { IMAGE_MODEL, VIDEO_MODEL, pickError, requestJson, resolveConfig, apiBase, authHeaders, missingConfigText } from "../config.mjs"
+import {
+  IMAGE_MODEL,
+  VIDEO_MODEL,
+  apiBase,
+  authHeaders,
+  missingConfigText,
+  pickError,
+  requestJson,
+  resolveConfig,
+} from "../config.mjs"
 import { checkRefs, normalizeRefs } from "./refs.mjs"
+import { failJson, okJson } from "./result.mjs"
 import {
   IMAGE_GEN_ARGS,
   IMAGE_STATUS_ARGS,
   VIDEO_GEN_ARGS,
   VIDEO_STATUS_ARGS,
 } from "./schema.mjs"
-import { waitImageTask, waitVideoTask } from "./tasks.mjs"
+import { queryVideoTask, waitImageTask } from "./tasks.mjs"
 
 /**
  * 图片与视频只有提交地址、默认模型、参数取舍不同；
@@ -32,9 +42,9 @@ const KINDS = {
     path: "/videos/generations",
     argsSpec: VIDEO_GEN_ARGS,
     promptHint: "请描述视频的画面、镜头与动作",
-    statusHint: "调用 video_status 取结果（视频通常数分钟）",
+    statusHint: "调用 video_status 取结果（视频通常数分钟，隔一会儿再查）",
     description:
-      "提交一次 muse2api 视频生成（文生视频/图生视频），立即返回 task_id。视频通常数分钟，用 video_status 轮询。",
+      "提交一次 muse2api 视频生成（文生视频/图生视频），立即返回 task_id。视频通常数分钟，稍后用 video_status 查询。",
     body(args, prompt) {
       const body = { prompt, model: args?.model || VIDEO_MODEL }
       if (args?.duration) body.duration = Number(args.duration)
@@ -45,43 +55,56 @@ const KINDS = {
   },
 }
 
-function refsError(failed) {
-  return `参考图读取失败：${failed.map((f) => `${f.value}（${f.error}）`).join("；")}`
-}
+const MISSING_CONFIG_HINT = "去 Magpie「插件 → 已安装 → muse2api → 选项」填 baseUrl 与 apiKey"
 
 async function submit(kind, args, ctx, ready) {
   const prompt = String(args?.prompt ?? "").trim()
-  if (!prompt) return `prompt 不能为空：${kind.promptHint}`
+  if (!prompt) {
+    return failJson({ error: `prompt 不能为空：${kind.promptHint}`, field: "prompt" })
+  }
   const refErr = checkRefs(args?.reference_images)
-  if (refErr) return refErr
+  if (refErr) return failJson({ error: refErr, field: "reference_images" })
 
   const c = ready()
-  if (!c) return missingConfigText()
+  if (!c) return failJson({ error: missingConfigText(), hint: MISSING_CONFIG_HINT })
 
   const body = kind.body(args, prompt)
-  const { refs, failed } = await normalizeRefs(args?.reference_images)
-  if (failed.length) return refsError(failed)
-  if (refs.length) body.images = refs
+  const norm = await normalizeRefs(args?.reference_images)
+  if (norm.error) return failJson({ error: norm.error, field: "reference_images" })
+  if (norm.failed.length) {
+    const detail = norm.failed.map((f) => `${f.value}（${f.error}）`).join("；")
+    return failJson({ error: `参考图读取失败：${detail}`, field: "reference_images" })
+  }
+  if (norm.refs.length) body.images = norm.refs
 
   const r = await requestJson(
     `${apiBase(c.baseUrl)}${kind.path}`,
     { method: "POST", headers: authHeaders(c.apiKey), body: JSON.stringify(body) },
     ctx,
   )
-  if (r.status === 0) return `连接失败（${c.baseUrl}）：${r.error}`
-  if (!r.ok) return `提交失败（HTTP ${r.status}）：${pickError(r)}`
+  if (r.status === 0) {
+    return failJson({ error: `连接失败（${c.baseUrl}）：${r.error}`, baseUrl: c.baseUrl })
+  }
+  if (!r.ok) {
+    return failJson({
+      http_status: r.status,
+      error: `提交失败（HTTP ${r.status}）：${pickError(r)}`,
+      baseUrl: c.baseUrl,
+    })
+  }
   const taskId = r.body?.task_id ?? r.body?.id
-  if (!taskId) return `提交失败：muse2api 没有返回 task_id：${r.text.slice(0, 300)}`
-  return JSON.stringify(
-    {
-      task_id: taskId,
-      status: r.body?.status ?? "queued",
-      progress: r.body?.progress ?? 0,
-      hint: kind.statusHint,
-    },
-    null,
-    2,
-  )
+  if (!taskId) {
+    return failJson({
+      error: `提交失败：muse2api 没有返回 task_id：${r.text.slice(0, 300)}`,
+      baseUrl: c.baseUrl,
+    })
+  }
+  return okJson({
+    task_id: taskId,
+    status: r.body?.status ?? "queued",
+    progress: r.body?.progress ?? 0,
+    hint: kind.statusHint,
+  })
 }
 
 export function makeToolDefinitions({ input, options } = {}) {
@@ -91,6 +114,11 @@ export function makeToolDefinitions({ input, options } = {}) {
     return baseUrl && apiKey ? { baseUrl, apiKey } : null
   }
   const secondsOf = (v) => Math.min(Math.max(Number(v ?? 40) || 40, 1), 40)
+  const statusReady = () => {
+    const c = ready()
+    if (c) return c
+    return failJson({ error: missingConfigText(), hint: MISSING_CONFIG_HINT })
+  }
 
   const makeGenerate = (kind) => ({
     description: kind.description,
@@ -100,37 +128,32 @@ export function makeToolDefinitions({ input, options } = {}) {
     },
   })
 
-  const makeStatus = (description, argsSpec, wait) => ({
-    description,
-    argsSpec,
-    async execute(args, ctx) {
-      const c = ready()
-      if (!c) return missingConfigText()
-      const taskId = String(args?.task_id ?? "").trim()
-      if (!taskId) return "缺少 task_id"
-      const result = await wait(
-        c.baseUrl,
-        c.apiKey,
-        taskId,
-        secondsOf(args?.wait_seconds) * 1000,
-        ctx,
-      )
-      return JSON.stringify(result, null, 2)
-    },
-  })
-
   return {
     generate_image: makeGenerate(KINDS.image),
-    image_status: makeStatus(
-      "查询 muse2api 图片任务（内部最多等 wait_seconds 秒轮询）；完成时返回可直接打开的图片 URL。",
-      IMAGE_STATUS_ARGS,
-      waitImageTask,
-    ),
+    image_status: {
+      description:
+        "查询 muse2api 图片任务（最多等 wait_seconds 秒轮询）；完成时返回可直接打开的图片 URL。",
+      argsSpec: IMAGE_STATUS_ARGS,
+      async execute(args, ctx) {
+        const c = statusReady()
+        if (typeof c === "string") return c
+        const taskId = String(args?.task_id ?? "").trim()
+        if (!taskId) return failJson({ error: "缺少 task_id", field: "task_id" })
+        return waitImageTask(c.baseUrl, c.apiKey, taskId, secondsOf(args?.wait_seconds) * 1000, ctx)
+      },
+    },
     generate_video: makeGenerate(KINDS.video),
-    video_status: makeStatus(
-      "查询 muse2api 视频任务（内部最多等 wait_seconds 秒轮询）；完成时返回可直接打开的视频 URL。",
-      VIDEO_STATUS_ARGS,
-      waitVideoTask,
-    ),
+    video_status: {
+      description:
+        "查询 muse2api 视频任务（单次查询，不等待）；未完成时返回 status/progress，稍后再查即可。",
+      argsSpec: VIDEO_STATUS_ARGS,
+      async execute(args, ctx) {
+        const c = statusReady()
+        if (typeof c === "string") return c
+        const taskId = String(args?.task_id ?? "").trim()
+        if (!taskId) return failJson({ error: "缺少 task_id", field: "task_id" })
+        return queryVideoTask(c.baseUrl, c.apiKey, taskId, ctx)
+      },
+    },
   }
 }
