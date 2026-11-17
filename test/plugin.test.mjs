@@ -14,6 +14,14 @@ import {
   resolveConfig,
 } from "../server/config.mjs"
 import { Muse2ApiPlugin } from "../server/index.mjs"
+import {
+  buildBrowserLogin,
+  importAccount,
+  isMuseCookie,
+  missingEssentials,
+  pickMuseCookies,
+  toCookieMap,
+} from "../server/login/index.mjs"
 import { buildAuthHook, buildConfigHook, buildProviderHook } from "../server/provider.mjs"
 import { _internal as toolsInternal, buildTools, makeToolDefinitions } from "../server/tools.mjs"
 import { startMock } from "./mock-muse2api.mjs"
@@ -106,7 +114,7 @@ describe("auth 钩子", () => {
 
   test("authorize 拒绝非法 URL 与非 http 协议", async () => {
     const auth = buildAuthHook()
-    const validate = auth.methods[0].prompts[0].validate
+    const validate = auth.methods.find((m) => m.type === "api").prompts[0].validate
     expect(validate("not a url")).toBeTruthy()
     expect(validate("file:///etc/passwd")).toBeTruthy()
     expect(validate("http://127.0.0.1:18610")).toBeUndefined()
@@ -365,7 +373,7 @@ describe("输入校验与边界", () => {
   })
 
   test("validate 拒绝带 /v1 的地址", () => {
-    const validate = buildAuthHook().methods[0].prompts[0].validate
+    const validate = buildAuthHook().methods.find((m) => m.type === "api").prompts[0].validate
     expect(validate("http://127.0.0.1:18610/v1")).toBeTruthy()
   })
 
@@ -593,5 +601,121 @@ describe("插件入口", () => {
       "image_status",
       "video_status",
     ])
+  })
+})
+
+describe("网页登录（Cookie）", () => {
+  test("auth 钩子提供 oauth 与 api 两种登录方式，oauth 在前", async () => {
+    const auth = buildAuthHook()
+    expect(auth.methods.map((m) => m.type)).toEqual(["oauth", "api"])
+    expect(typeof auth.methods[0].authorize).toBe("function")
+  })
+
+  test("isMuseCookie 只认 muse.ai 及其子域", () => {
+    expect(isMuseCookie({ domain: ".muse.ai", name: "hatch_sess" })).toBe(true)
+    expect(isMuseCookie({ domain: "muse.ai", name: "x" })).toBe(true)
+    expect(isMuseCookie({ domain: "www.muse.ai", name: "x" })).toBe(true)
+    expect(isMuseCookie({ domain: ".example.com", name: "x" })).toBe(false)
+    expect(isMuseCookie({ domain: "notmuse.ai", name: "x" })).toBe(false)
+  })
+
+  test("pickMuseCookies 丢掉浏览器内部 cookie 与空值", () => {
+    const picked = pickMuseCookies([
+      { domain: ".muse.ai", name: "hatch_sess", value: "s1" },
+      { domain: ".muse.ai", name: "theme", value: "dark" },
+      { domain: ".google.com", name: "NID", value: "x" },
+      { domain: ".muse.ai", name: "", value: "y" },
+      { domain: ".muse.ai", name: "no_value" },
+    ])
+    expect(picked.map((c) => c.name)).toEqual(["hatch_sess", "theme"])
+  })
+
+  test("missingEssentials 报告缺核心 cookie", () => {
+    expect(missingEssentials([{ name: "hatch_sess" }])).toEqual([])
+    expect(missingEssentials([{ name: "theme" }])).toEqual(["hatch_sess"])
+    expect(missingEssentials([])).toEqual(["hatch_sess"])
+  })
+
+  test("toCookieMap 转成 muse2api 要的 name→value", () => {
+    expect(
+      toCookieMap([
+        { name: "hatch_sess", value: "a" },
+        { name: "theme", value: "dark" },
+      ]),
+    ).toEqual({ hatch_sess: "a", theme: "dark" })
+  })
+
+  test("importAccount 把 cookie 导入账号池", async () => {
+    const out = await importAccount({
+      baseUrl: mock.url,
+      apiKey: mock.apiKey,
+      cookies: [{ name: "hatch_sess", value: "s1" }],
+      label: "测试账号",
+    })
+    expect(out.ok).toBe(true)
+    expect(out.cookieCount).toBe(1)
+    expect(out.essentialMissing).toEqual([])
+    expect(mock.state.accounts.at(-1).label).toBe("测试账号")
+  })
+
+  test("importAccount 遇 401 返回可操作错误", async () => {
+    const bad = await startMock({ adminAccountError: 401 })
+    try {
+      const out = await importAccount({
+        baseUrl: bad.url,
+        apiKey: bad.apiKey,
+        cookies: [{ name: "hatch_sess", value: "s1" }],
+        label: "x",
+      })
+      expect(out.ok).toBe(false)
+      expect(out.error).toBeTruthy()
+    } finally {
+      await bad.close()
+    }
+  })
+
+  test("importAccount 连不上时报告地址", async () => {
+    const out = await importAccount({
+      baseUrl: "http://127.0.0.1:1",
+      apiKey: "k",
+      cookies: [{ name: "hatch_sess", value: "s1" }],
+      label: "x",
+    })
+    expect(out.ok).toBe(false)
+    expect(out.error).toContain("/admin/accounts")
+  })
+
+  test("authorize 缺 key 时给出填 key 的指引", async () => {
+    cleanupEnv()
+    const authorize = buildBrowserLogin({ options: { baseUrl: mock.url }, input: {} })
+    await expect(authorize()).rejects.toThrow(/API key/)
+  })
+
+  test("authorize 在服务不可达时报错", async () => {
+    cleanupEnv()
+    const authorize = buildBrowserLogin({
+      options: { baseUrl: "http://127.0.0.1:1", apiKey: "k" },
+      input: {},
+    })
+    await expect(authorize()).rejects.toThrow(/连不上/)
+  })
+
+  test("authorize 返回进度页地址与 callback", async () => {
+    const authorize = buildBrowserLogin({
+      options: { baseUrl: mock.url, apiKey: mock.apiKey },
+      input: {},
+    })
+    const ret = await authorize()
+    try {
+      expect(ret.method).toBe("auto")
+      expect(ret.url).toStartWith("http://127.0.0.1:")
+      expect(typeof ret.callback).toBe("function")
+      expect(ret.instructions).toContain("muse.ai")
+      const page = await fetch(ret.url)
+      expect(page.status).toBe(200)
+      expect(await page.text()).toContain("muse2api 登录")
+    } finally {
+      ret.progress.stop()
+    }
   })
 })

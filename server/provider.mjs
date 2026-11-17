@@ -8,8 +8,10 @@ import {
   checkBaseUrl,
   modelsUrl,
   normalizeKey,
+  resolveConfig,
   trimBase,
 } from "./config.mjs"
+import { buildBrowserLogin } from "./login/index.mjs"
 
 function baseModels() {
   return {
@@ -63,12 +65,17 @@ const prompts = [
   },
 ]
 
-export function buildAuthHook() {
+export function buildAuthHook({ input, options, log } = {}) {
   return {
     provider: PROVIDER_ID,
     maxConcurrency: 1,
     icon: AUTH_ICON,
     methods: [
+      {
+        type: "oauth",
+        label: "muse.ai 网页登录（Cookie）",
+        authorize: buildBrowserLogin({ input, options, log }),
+      },
       {
         type: "api",
         label: "muse2api API key",
@@ -106,24 +113,36 @@ export function buildAuthHook() {
     },
     async loader(getAuth) {
       const auth = await getAuth()
-      if (auth?.type !== "api") return {}
-      const baseUrl = trimBase(auth.metadata?.baseUrl) || DEFAULT_BASE
-      return { baseURL: apiBase(baseUrl), apiKey: auth.key }
+      const { key, baseUrl } = credentialOf(auth, { input, options })
+      if (!key) return {}
+      return { baseURL: apiBase(baseUrl), apiKey: key }
     },
   }
 }
 
-export function buildProviderHook() {
+/**
+ * api 方法把 key 放在 auth.key；oauth（网页登录）把它放在 access/refresh。
+ * 两种方法之后都要能拿到同一把 muse2api key，所以这里统一取值。
+ */
+function credentialOf(auth, { input, options } = {}) {
+  const configured = resolveConfig({ input, options })
+  return {
+    key: normalizeKey(auth?.key ?? auth?.access),
+    baseUrl: trimBase(auth?.metadata?.baseUrl) || configured.baseUrl || DEFAULT_BASE,
+  }
+}
+
+export function buildProviderHook({ input, options } = {}) {
   return {
     id: PROVIDER_ID,
     async models(provider, { auth } = {}) {
       const fallback = provider?.models ?? baseModels()
-      if (auth?.type !== "api") return fallback
-      const baseUrl = trimBase(auth.metadata?.baseUrl) || DEFAULT_BASE
+      const { key: apiKey, baseUrl } = credentialOf(auth, { input, options })
+      if (!apiKey) return fallback
       let body
       try {
         const res = await fetch(modelsUrl(baseUrl), {
-          headers: authHeaders(auth.key),
+          headers: authHeaders(apiKey),
           signal: AbortSignal.timeout(8_000),
         })
         if (!res.ok) return fallback

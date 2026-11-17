@@ -35,11 +35,14 @@ export async function startMock(options = {}) {
   // videoUrlShape: "all" | "url" | "video" | "result"；videoFail: true 时任务以 failed 结束
   const videoUrlShape = options.videoUrlShape ?? "all"
   const videoFail = options.videoFail ?? false
+  // adminAccountError: 非 0 时 /admin/accounts 直接返回该状态码，用来测导入失败路径
+  const adminAccountError = options.adminAccountError ?? 0
 
   const state = {
     requests: [],
     imagePosts: [],
     videoPosts: [],
+    accounts: [],
     imageTasks: new Map(),
     videoTasks: new Map(),
   }
@@ -58,6 +61,21 @@ export async function startMock(options = {}) {
     if (url.pathname === "/v1/models") {
       if (!authorized) return send(401, { detail: "缺少 Authorization: Bearer <key>" })
       return send(200, { object: "list", data: models })
+    }
+
+    if (req.method === "POST" && url.pathname === "/admin/accounts") {
+      if (!authorized) return send(401, { detail: "API key 无效" })
+      if (adminAccountError) return send(adminAccountError, { detail: "import refused" })
+      const body = await readBody(req)
+      const cookies = body?.cookies ?? {}
+      const id = `acc_${state.accounts.length + 1}`
+      state.accounts.push({ id, label: body?.label ?? "", cookies })
+      return send(200, {
+        added: [{ id, label: body?.label ?? "", cookie_count: Object.keys(cookies).length, expires_at: 0 }],
+        count: 1,
+        essential_missing: cookies.hatch_sess ? [] : ["hatch_sess"],
+        warning: cookies.hatch_sess ? "" : "缺少核心 cookie：hatch_sess",
+      })
     }
 
     if (req.method === "POST" && url.pathname === "/v1/images/tasks") {

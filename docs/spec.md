@@ -25,8 +25,13 @@
 `magpie-plugin`），同时承担两种角色：
 
 - **供应商插件**：provider id `muse2api`，`npm: "@ai-sdk/openai-compatible"`，模型 `muse-spark`；
-  登录方式为 API key + 手填 baseURL，`authorize` 内调 `GET /v1/models` 校验；baseURL 存进
-  auth metadata，`loader` 据此拼 `baseURL = <baseUrl>/v1`。
+  登录两条路：**muse.ai 网页登录（Cookie）** 与 **手填 API key + baseURL**，两者最终都产出同一个
+  `MUSE2API_KEY`；baseURL 存进 auth metadata，`loader` 据此拼 `baseURL = <baseUrl>/v1`。
+  - Cookie 登录的做法（对齐 `magpie-muse-web` 的 `browserLogin`）：`authorize` 返回一个本地进度页
+    URL 与 `callback`；`callback` 用独立 profile 拉起本机 Chrome/Edge（`--remote-debugging-port`），
+    轮询 CDP `Storage.getCookies` 直到出现 muse.ai 域下的核心 cookie `hatch_sess`，再
+    `POST <baseUrl>/admin/accounts { label, cookies }` 导入 muse2api 账号池，成功后返回
+    `{ type: "success", access: <apiKey>, refresh: <apiKey>, expires, accountId, metadata: { baseUrl } }`。
 - **工具插件**：4 个工具，覆盖图片/视频的提交与查询：
   - `generate_image` / `image_status`
   - `generate_video` / `video_status`
@@ -48,19 +53,21 @@ Magpie GUI ──登录──> authorize(baseUrl, apiKey) ──GET /v1/models�
 
 ## User Stories
 
-1. 作为 Magpie 用户，我在设置里安装 `github:teddyztd/magpie-plugin-muse2api`，登录时填 muse2api
-   地址与 API key，能通过校验并在模型列表里看到 `muse-spark`。
+1. 作为 Magpie 用户，我在设置里安装 `github:teddyztd/magpie-plugin-muse2api`，登录时可以用
+   「网页登录（Cookie）」或「手填地址 + API key」，通过后在模型列表里看到 `muse-spark`。
 2. 作为用户，我选 `muse-spark` 对话，回答正常流式返回（Magpie 网关转 SSE）。
-3. 作为用户，我对 agent 说“画一只在雨里的猫”，agent 调 `generate_image`，拿到 `task_id` 后调
+3. 作为用户，我在登录弹窗里选「muse.ai 网页登录（Cookie）」，弹出的浏览器里登录 muse.ai 后，
+   账号自动出现在 muse2api 的账号池里，登录直接成功——不用手工去管理页导 cookie。
+4. 作为用户，我对 agent 说“画一只在雨里的猫”，agent 调 `generate_image`，拿到 `task_id` 后调
    `image_status` 取回图片直链，并在对话里看到 URL。
-4. 作为用户，我说“把这张图改成水彩风格”并给出参考图 URL，agent 调 `generate_image` 带
+5. 作为用户，我说“把这张图改成水彩风格”并给出参考图 URL，agent 调 `generate_image` 带
    `reference_images`，走 muse2api 的参考图链路。
-5. 作为用户，我说“生成一段 5 秒的海浪视频”，agent 调 `generate_video` 拿 `task_id`，随后调
+6. 作为用户，我说“生成一段 5 秒的海浪视频”，agent 调 `generate_video` 拿 `task_id`，随后调
    `video_status` 取回视频直链。
-6. 作为用户，我卸载 `magpie-muse-web` 后，模型列表里 `muse-spark` 只出现一次（本插件）。
-7. 作为维护者，`bun test` 在 mock muse2api 上覆盖登录、模型拉取、四个工具的提交与查询、缺配置
+7. 作为用户，我卸载 `magpie-muse-web` 后，模型列表里 `muse-spark` 只出现一次（本插件）。
+8. 作为维护者，`bun test` 在 mock muse2api 上覆盖登录、模型拉取、四个工具的提交与查询、缺配置
    报错，不依赖真实实例。
-8. 作为维护者，我 push 到 main 后，Magpie 能在 ≤10 分钟内通过 GitHub 发现更新（topic
+9. 作为维护者，我 push 到 main 后，Magpie 能在 ≤10 分钟内通过 GitHub 发现更新（topic
    `magpie-plugin`）。
 
 ## Implementation Decisions
@@ -86,16 +93,21 @@ Magpie GUI ──登录──> authorize(baseUrl, apiKey) ──GET /v1/models�
     声明支持只会诱导 agent 发 tools。
 - `auth`：
   - `provider: "muse2api"`，`icon`（data URL 或内置静态图标）。
-  - `methods: [{ type: "api", label: "muse2api API key", placeholder: "m2a_…", prompts: [
+  - `methods: [{ type: "oauth", label: "muse.ai 网页登录（Cookie）", authorize: <browserLogin> },
+    { type: "api", label: "muse2api API key", placeholder: "m2a_…", prompts: [
     { type: "text", key: "baseUrl", message: "muse2api 地址", placeholder: "http://127.0.0.1:18610",
       validate: 必须是 http(s) URL；另外拒绝带 /v1 的地址（插件会自动补） },
     { type: "password", key: "apiKey", message: "MUSE2API_KEY" } ] }]`。
-  - `authorize(inputs)`：`GET ${baseUrl}/v1/models`，带 `Authorization: Bearer <key>`；
+  - Cookie 登录（`server/login/*`）：`ESSENTIAL_COOKIES = ["hatch_sess"]`；`isMuseCookie` 只认
+    `muse.ai` / `*.muse.ai`；15 分钟超时；浏览器进程在 `finally` 里 `taskkill /t /f` 关掉；
+    导入失败会把上游 `detail` 透出成 failed 文案。`authorize` 不接收参数，baseUrl/apiKey 取自
+    插件选项或环境变量（缺 key 时直接失败并提示去选项里填）。
+  - `authorize(inputs)`（API key 方式）：`GET ${baseUrl}/v1/models`，带 `Authorization: Bearer <key>`；
     2xx → `{ type: "success", key: inputs.apiKey, metadata: { baseUrl } }`；
     401/403 → `{ type: "failed", error: "API key 无效（muse2api 返回 401）" }`；
     网络错误 → `{ type: "failed", error: "无法连接 <baseUrl>/v1/models：…" }`。
 - `loader(getAuth)`：读 `auth.metadata.baseUrl`（缺失时回退 `api` 默认值），返回
-  `{ baseURL: `${baseUrl}/v1`, apiKey: auth.key }`。
+  `{ baseURL: `${baseUrl}/v1`, apiKey: auth.key }`（oauth 方式的凭据是 `auth.access`）。
 - `provider.models(provider, { auth })`：`GET ${baseUrl}/v1/models`，把返回的 `muse-*` 映射成模型
   定义（`muse-spark` 文本；`muse-image` / `muse-video` 不作为对话模型暴露，避免用户在聊天里选到
   不支持 chat 的模型）；失败时返回原列表（回退静态 `muse-spark`）。
@@ -174,7 +186,10 @@ README 明确：本插件**替代** `github:JohnWangggg/magpie-muse-web`（两�
 
 - `bun test`（无 TypeScript 编译步骤；纯 ESM JS）。
 - 测试内起 `node:http` mock muse2api，覆盖：
-  1. `authorize`：正确 key → success + metadata.baseUrl；错误 key → failed；不可达 → failed。
+  1. `authorize`（API key）：正确 key → success + metadata.baseUrl；错误 key → failed；不可达 → failed。
+  1b. Cookie 登录：`auth.methods` 顺序 oauth→api；`isMuseCookie` 只认 muse.ai 域；`pickMuseCookies`
+      过滤内部/空值；`missingEssentials` 认 `hatch_sess`；`toCookieMap`；`importAccount` 成功 /
+      401 / 连不上；`authorize` 缺 key 与不可达各报可操作错误；返回进度页且页面可访问。
   2. `loader`：返回 `baseURL = <baseUrl>/v1` 与 `apiKey`。
   3. `provider.models`：mock `/v1/models` 返回三条 → 只暴露 `muse-spark`；mock 500 → 回退静态。
   4. `generate_image`：断言请求体含 `prompt` 与 `async: true`，返回 `task_id`。
@@ -196,7 +211,8 @@ README 明确：本插件**替代** `github:JohnWangggg/magpie-muse-web`（两�
 
 ## Out of Scope
 
-- OAuth / 设备码登录（muse2api 只有 Bearer key）。
+- 第三方 OAuth / 设备码登录：muse2api 只认 Bearer key，没有 OAuth 端点；插件侧只做
+  「拉起浏览器抓 muse.ai cookie 再导入账号池」，不做账号密码代填、也不做设备码流程。
 - chat 协议转换（Magpie 网关负责）。
 - b64_json 落盘、缩略图生成、画廊。
 - 面板 / 页面（sandbox 不允许页面自己发请求，且文档无插件 HTTP 服务注册机制）。
