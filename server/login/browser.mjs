@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs"
 import { spawn } from "node:child_process"
 import { homedir, platform } from "node:os"
 import { join } from "node:path"
@@ -48,9 +48,43 @@ export function findBrowser() {
   return null
 }
 
-/** 独立 profile：不碰用户日常浏览器，退出后可整目录删除。 */
-export function profileDir() {
-  return join(homedir(), ".config", "magpie", "plugins", "muse2api-login-profile")
+/** 每次登录一个独立 profile 的父目录：多个账号之间不共享 cookie / 会话。 */
+export function profileRoot() {
+  return join(homedir(), ".config", "magpie", "plugins", "muse2api-login-profiles")
+}
+
+/** 为本次登录开一个新的独立 profile 目录（已创建好），退出后整目录删除。 */
+export function newProfileDir(now = Date.now()) {
+  const dir = join(profileRoot(), `p-${now}-${Math.random().toString(36).slice(2, 8)}`)
+  mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+/** 删掉某个 profile；浏览器还占着文件时静默失败，下次清理再收。 */
+export function removeProfile(dir) {
+  if (!dir) return false
+  try {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** 清理僵尸 profile：正常流程会自己删，这里兜住崩溃/强杀留下的目录。 */
+export function cleanupProfiles({ maxAgeMs = 12 * 60 * 60 * 1000, now = Date.now() } = {}) {
+  const root = profileRoot()
+  if (!existsSync(root)) return 0
+  let removed = 0
+  for (const name of readdirSync(root)) {
+    const dir = join(root, name)
+    try {
+      if (now - statSync(dir).mtimeMs < maxAgeMs) continue
+      removeProfile(dir)
+      removed++
+    } catch {}
+  }
+  return removed
 }
 
 export function freePort() {
@@ -61,10 +95,10 @@ export function freePort() {
 }
 
 /** 启动登录窗口；返回 pid，供结束时整棵进程树一起收掉。 */
-export function launchBrowser({ browser, cdpPort, url }) {
+export function launchBrowser({ browser, cdpPort, url, profile = newProfileDir() }) {
   const args = [
     `--remote-debugging-port=${cdpPort}`,
-    `--user-data-dir=${profileDir()}`,
+    `--user-data-dir=${profile}`,
     "--no-first-run",
     "--no-default-browser-check",
     "--disable-features=Translate,MediaRouter",

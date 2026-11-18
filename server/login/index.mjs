@@ -1,3 +1,8 @@
+import { createHash } from "node:crypto"
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { homedir } from "node:os"
+import { dirname, join } from "node:path"
+
 import {
   DEFAULT_BASE,
   authHeaders,
@@ -7,7 +12,7 @@ import {
   sleep,
   trimBase,
 } from "../config.mjs"
-import { findBrowser, freePort, killTree, launchBrowser } from "./browser.mjs"
+import { cleanupProfiles, findBrowser, freePort, killTree, launchBrowser, newProfileDir, removeProfile } from "./browser.mjs"
 import { Cdp, readCookies, waitForCdp } from "./cdp.mjs"
 
 /** muse2api 判定「账号可用」的核心 cookie（store.py / engine.py 同名常量）。 */
@@ -76,6 +81,71 @@ export async function importAccount({ baseUrl, apiKey, cookies, label }) {
   }
 }
 
+/** 同一个账号重新登录时：只刷新它已有的 cookie，不再新建一个账号。 */
+export async function refreshAccount({ baseUrl, apiKey, id, cookies }) {
+  const endpoint = `${trimBase(baseUrl)}/admin/accounts/${encodeURIComponent(id)}/cookies`
+  let res
+  try {
+    res = await fetch(endpoint, {
+      method: "POST",
+      headers: authHeaders(apiKey),
+      body: JSON.stringify({ cookies: toCookieMap(cookies) }),
+      signal: AbortSignal.timeout(20_000),
+    })
+  } catch (e) {
+    return { ok: false, error: `连不上 ${endpoint}：${e?.message ?? e}` }
+  }
+  const text = await res.text().catch(() => "")
+  let body = null
+  try {
+    body = text ? JSON.parse(text) : null
+  } catch {
+    body = null
+  }
+  if (res.status === 404) return { ok: false, missing: true, error: pickError({ status: 404, body, text }) }
+  if (!res.ok) return { ok: false, error: pickError({ status: res.status, body, text }) }
+  return { ok: true, id: body?.id ?? id, cookieCount: body?.cookie_count ?? Object.keys(toCookieMap(cookies)).length }
+}
+
+/** 账号指纹：muse.ai 的会话 cookie 取哈希，用来判断「这个账号是不是已经导入过」。 */
+export function fingerprint(cookies) {
+  const map = toCookieMap(cookies)
+  const seed = [map.hatch_sess, map.hatch_vml].filter(Boolean).join("|")
+  if (!seed) return ""
+  return createHash("sha256").update(seed).digest("hex").slice(0, 32)
+}
+
+function ledgerPath() {
+  return join(homedir(), ".config", "magpie", "plugins", "muse2api-login-ledger.json")
+}
+
+/** 本地账本：fingerprint → { id, label, at }。上游不暴露 cookie，只能自己记。 */
+export function readLedger(file = ledgerPath()) {
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8"))
+    return parsed && typeof parsed === "object" ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+export function writeLedger(ledger, file = ledgerPath()) {
+  try {
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileSync(file, `${JSON.stringify(ledger, null, 2)}\n`, "utf8")
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** 账本里查重；命中就返回上次导入的账号 id。 */
+export function findKnown(ledger, fp) {
+  if (!fp) return null
+  const hit = ledger?.[fp]
+  return hit && typeof hit.id === "string" ? hit : null
+}
+
 /** 登录进度页：Magpie 会在系统浏览器里打开它；只用内联资源，2 秒自刷新。 */
 export function startProgressPage() {
   let state = { title: "正在等待 muse.ai 登录", detail: "请在弹出的浏览器窗口里登录 muse.ai。" }
@@ -123,6 +193,18 @@ function escapeHtml(v) {
   return String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c])
 }
 
+/** 登录成功后交给 Magpie 的凭据：muse2api 的 key 本身不过期，给远期有效期免得反复续期。 */
+function successResult(cfg, baseUrl, accountId) {
+  return {
+    type: "success",
+    access: cfg.apiKey,
+    refresh: cfg.apiKey,
+    expires: Date.now() + 365 * 86_400_000,
+    accountId,
+    metadata: { baseUrl: trimBase(baseUrl) },
+  }
+}
+
 /**
  * Magpie 的 oauth 登录方法：authorize 返回进度页地址，callback 里开浏览器抓 cookie、
  * 导入 muse2api、再用当前 key 收口。账号池在 muse2api 侧，所以成功凭据仍是那把 key。
@@ -131,6 +213,8 @@ export function buildBrowserLogin({ input, options, log } = {}) {
   return async function authorize() {
     const cfg = resolveConfig({ input, options })
     const baseUrl = cfg.baseUrl || DEFAULT_BASE
+    // 顺手清掉上次崩溃/强杀留下的 profile 目录，正常流程自己会删。
+    cleanupProfiles()
     if (!cfg.apiKey) {
       throw new Error(
         "网页登录需要先有 muse2api 的 API key（m2a_…）：请在「插件 → muse2api → 选项」里填 apiKey，或设置环境变量 MUSE2API_KEY。",
@@ -168,8 +252,9 @@ export function buildBrowserLogin({ input, options, log } = {}) {
       async callback() {
         let cdp = null
         let pid = 0
+        const profile = newProfileDir()
         try {
-          pid = launchBrowser({ browser, cdpPort, url: LOGIN_URL })
+          pid = launchBrowser({ browser, cdpPort, url: LOGIN_URL, profile })
           const wsUrl = await waitForCdp(cdpPort)
           cdp = await Cdp.connect(wsUrl)
           progress.set({ title: "已打开登录窗口", detail: "请在 muse.ai 页面完成登录，这里会自动检测。" })
@@ -194,23 +279,38 @@ export function buildBrowserLogin({ input, options, log } = {}) {
             }
           }
 
+          // 同一个 muse.ai 账号再登录一次时，只刷新已有账号的 cookie，不重复建账号。
+          const fp = fingerprint(cookies)
+          const ledger = readLedger()
+          const known = findKnown(ledger, fp)
+          if (known) {
+            progress.set({ title: "正在刷新已有账号", detail: `这个 muse.ai 账号已在账号池里（${known.id}），正在更新它的 cookie。` })
+            const refreshed = await refreshAccount({ baseUrl, apiKey: cfg.apiKey, id: known.id, cookies })
+            if (refreshed.ok) {
+              progress.set({ title: "登录成功", detail: `已更新账号 ${refreshed.id} 的 cookie，可以关闭这个页面。` })
+              return successResult(cfg, baseUrl, refreshed.id, cookies)
+            }
+            if (!refreshed.missing) {
+              log?.("warn", `刷新账号失败：${refreshed.error}`)
+              return { type: "failed", error: `muse2api 刷新账号失败：${refreshed.error}` }
+            }
+            // 账号在上游被删了：往下走，重新导入一个。
+          }
+
           progress.set({ title: "正在导入 muse2api", detail: "已拿到 muse.ai 会话，正在写入账号池。" })
-          const label = `magpie 网页登录 ${new Date().toLocaleString("zh-CN")}`
+          const seq = Object.keys(ledger).length + 1
+          const label = `muse2api 网页登录 #${seq} ${new Date().toLocaleString("zh-CN")}`
           const imported = await importAccount({ baseUrl, apiKey: cfg.apiKey, cookies, label })
           if (!imported.ok) {
             log?.("warn", `导入账号失败：${imported.error}`)
             return { type: "failed", error: `muse2api 导入账号失败：${imported.error}` }
           }
-          progress.set({ title: "登录成功", detail: `已导入账号 ${imported.id}（${imported.cookieCount} 个 cookie），可以关闭这个页面。` })
-          return {
-            type: "success",
-            access: cfg.apiKey,
-            refresh: cfg.apiKey,
-            // muse2api 的 key 本身不过期；给一个远期值，避免 Magpie 反复要求续期。
-            expires: Date.now() + 365 * 86_400_000,
-            accountId: imported.id,
-            metadata: { baseUrl: trimBase(baseUrl) },
+          if (fp) {
+            ledger[fp] = { id: imported.id, label, at: Date.now() }
+            writeLedger(ledger)
           }
+          progress.set({ title: "登录成功", detail: `已导入账号 ${imported.id}（${imported.cookieCount} 个 cookie），可以关闭这个页面。` })
+          return successResult(cfg, baseUrl, imported.id, cookies)
         } catch (e) {
           return { type: "failed", error: `muse.ai 登录失败：${e?.message ?? e}` }
         } finally {
@@ -218,6 +318,8 @@ export function buildBrowserLogin({ input, options, log } = {}) {
             cdp?.close()
           } catch {}
           killTree(pid)
+          // 关掉窗口再删 profile：下一次登录从零开始，账号之间不会串 cookie。
+          removeProfile(profile)
           progress.stop()
         }
       },

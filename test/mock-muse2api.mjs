@@ -78,6 +78,17 @@ export async function startMock(options = {}) {
       })
     }
 
+    const refreshCookies = url.pathname.match(/^\/admin\/accounts\/([^/]+)\/cookies$/)
+    if (req.method === "POST" && refreshCookies) {
+      if (!authorized) return send(401, { detail: "API key 无效" })
+      const id = decodeURIComponent(refreshCookies[1])
+      const acc = state.accounts.find((a) => a.id === id)
+      if (!acc) return send(404, { detail: "账号不存在" })
+      const body = await readBody(req)
+      acc.cookies = { ...acc.cookies, ...(body?.cookies ?? {}) }
+      return send(200, { id, cookie_count: Object.keys(acc.cookies).length })
+    }
+
     if (req.method === "POST" && url.pathname === "/v1/images/tasks") {
       if (!authorized) return send(401, { detail: "API key 无效" })
       const body = await readBody(req)

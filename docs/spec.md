@@ -102,6 +102,12 @@ Magpie GUI ──登录──> authorize(baseUrl, apiKey) ──GET /v1/models�
     `muse.ai` / `*.muse.ai`；15 分钟超时；浏览器进程在 `finally` 里 `taskkill /t /f` 关掉；
     导入失败会把上游 `detail` 透出成 failed 文案。`authorize` 不接收参数，baseUrl/apiKey 取自
     插件选项或环境变量（缺 key 时直接失败并提示去选项里填）。
+  - 多账号隔离：每次 `callback` 用 `newProfileDir()` 开一个全新 profile
+    （`~/.config/magpie/plugins/muse2api-login-profiles/p-<ts>-<rand>`），`finally` 里 `removeProfile()`
+    整目录删除，账号之间不共享 cookie；`authorize` 时顺带 `cleanupProfiles()` 清掉 12 小时前的残留。
+  - 重复登录去重：`fingerprint(cookies)` 对 `hatch_sess`/`hatch_vml` 取 sha256 前 32 位，命中本地账本
+    `~/.config/magpie/plugins/muse2api-login-ledger.json` 时改用 `POST /admin/accounts/<id>/cookies`
+    刷新已有账号（404 表示上游已删，回退成新建）。上游 `/admin/accounts` 不返回 cookie 值，账本只能本机记。
   - `authorize(inputs)`（API key 方式）：`GET ${baseUrl}/v1/models`，带 `Authorization: Bearer <key>`；
     2xx → `{ type: "success", key: inputs.apiKey, metadata: { baseUrl } }`；
     401/403 → `{ type: "failed", error: "API key 无效（muse2api 返回 401）" }`；
@@ -190,6 +196,8 @@ README 明确：本插件**替代** `github:JohnWangggg/magpie-muse-web`（两�
   1b. Cookie 登录：`auth.methods` 顺序 oauth→api；`isMuseCookie` 只认 muse.ai 域；`pickMuseCookies`
       过滤内部/空值；`missingEssentials` 认 `hatch_sess`；`toCookieMap`；`importAccount` 成功 /
       401 / 连不上；`authorize` 缺 key 与不可达各报可操作错误；返回进度页且页面可访问。
+  1c. 多账号与去重：`fingerprint` 只随 `hatch_sess`/`hatch_vml` 变化且稳定；账本写入/读回/`findKnown`
+      命中与不命中；`refreshAccount` 复用同一账号（不新增）、404 时 `missing:true`。
   2. `loader`：返回 `baseURL = <baseUrl>/v1` 与 `apiKey`。
   3. `provider.models`：mock `/v1/models` 返回三条 → 只暴露 `muse-spark`；mock 500 → 回退静态。
   4. `generate_image`：断言请求体含 `prompt` 与 `async: true`，返回 `task_id`。

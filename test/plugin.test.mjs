@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { mkdtemp, writeFile } from "node:fs/promises"
+import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -16,11 +17,16 @@ import {
 import { Muse2ApiPlugin } from "../server/index.mjs"
 import {
   buildBrowserLogin,
+  findKnown,
+  fingerprint,
   importAccount,
   isMuseCookie,
   missingEssentials,
   pickMuseCookies,
+  readLedger,
+  refreshAccount,
   toCookieMap,
+  writeLedger,
 } from "../server/login/index.mjs"
 import { buildAuthHook, buildConfigHook, buildProviderHook } from "../server/provider.mjs"
 import { _internal as toolsInternal, buildTools, makeToolDefinitions } from "../server/tools.mjs"
@@ -643,6 +649,62 @@ describe("网页登录（Cookie）", () => {
         { name: "theme", value: "dark" },
       ]),
     ).toEqual({ hatch_sess: "a", theme: "dark" })
+  })
+
+  test("fingerprint 只随会话 cookie 变化，稳定且可区分账号", () => {
+    const a = [{ name: "hatch_sess", value: "s1" }, { name: "theme", value: "dark" }]
+    const b = [{ name: "hatch_sess", value: "s1" }, { name: "theme", value: "light" }]
+    const c = [{ name: "hatch_sess", value: "s2" }]
+    expect(fingerprint(a)).toMatch(/^[0-9a-f]{32}$/)
+    expect(fingerprint(a)).toBe(fingerprint(b))
+    expect(fingerprint(a)).not.toBe(fingerprint(c))
+    expect(fingerprint([])).toBe("")
+  })
+
+  test("账本写入后可读回，findKnown 命中才返回账号", () => {
+    const file = join(mkdtempSync(join(tmpdir(), "m2a-ledger-")), "ledger.json")
+    expect(readLedger(file)).toEqual({})
+    const ledger = { abc: { id: "acc_1", label: "x", at: 1 } }
+    expect(writeLedger(ledger, file)).toBe(true)
+    expect(readLedger(file)).toEqual(ledger)
+    expect(findKnown(ledger, "abc")?.id).toBe("acc_1")
+    expect(findKnown(ledger, "nope")).toBe(null)
+    expect(findKnown(ledger, "")).toBe(null)
+  })
+
+  test("refreshAccount 复用已有账号，404 时报告 missing", async () => {
+    const local = await startMock({ apiKey: "k" })
+    try {
+      const added = await importAccount({
+        baseUrl: local.url,
+        apiKey: "k",
+        cookies: [{ name: "hatch_sess", value: "s1" }],
+        label: "first",
+      })
+      expect(added.ok).toBe(true)
+      expect(added.id).toBe("acc_1")
+
+      const refreshed = await refreshAccount({
+        baseUrl: local.url,
+        apiKey: "k",
+        id: added.id,
+        cookies: [{ name: "hatch_sess", value: "s2" }],
+      })
+      expect(refreshed.ok).toBe(true)
+      expect(refreshed.id).toBe("acc_1")
+      expect(local.state.accounts).toHaveLength(1)
+
+      const missing = await refreshAccount({
+        baseUrl: local.url,
+        apiKey: "k",
+        id: "acc_none",
+        cookies: [{ name: "hatch_sess", value: "s3" }],
+      })
+      expect(missing.ok).toBe(false)
+      expect(missing.missing).toBe(true)
+    } finally {
+      await local.close()
+    }
   })
 
   test("importAccount 把 cookie 导入账号池", async () => {
