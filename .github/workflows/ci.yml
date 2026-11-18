@@ -50,9 +50,12 @@ jobs:
           const factory = mod.Muse2ApiPlugin
           if (typeof factory !== "function") throw new Error("Muse2ApiPlugin 不是函数")
           const hooks = await factory({ client: { app: { log() {} } } }, {})
-          for (const key of ["config", "auth", "provider"]) {
-            if (typeof hooks[key] !== "function") throw new Error(`缺少钩子 ${key}`)
+          // config 是函数；auth / provider / tool 是对象（宿主按心跳钩子直接使用）
+          const shape = { config: "function", auth: "object", provider: "object", tool: "object" }
+          for (const [key, kind] of Object.entries(shape)) {
+            if (typeof hooks[key] !== kind) throw new Error(`钩子 ${key} 形状不对：期望 ${kind}，实际 ${typeof hooks[key]}`)
           }
+          if (hooks.provider.id !== "muse2api") throw new Error("provider.id 不是 muse2api")
           console.log("hooks ok:", Object.keys(hooks).join(","))
           EOF
           bun /tmp/load-check.mjs
