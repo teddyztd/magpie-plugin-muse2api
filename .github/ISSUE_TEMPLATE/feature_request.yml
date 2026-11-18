@@ -1,0 +1,37 @@
+name: 功能请求
+description: 希望插件支持新的 muse2api 能力或交互方式
+title: "[feat] "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        本插件的边界：**只做封装，不改 muse2api 的语义**。
+        如果需求需要改上游行为，请先在 muse2api 仓库讨论。
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你遇到的场景
+      description: 现在怎么做、哪里别扭
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 期望的形态
+      description: 尽量写成「调用什么工具 / 传什么参数 / 拿到什么返回」
+    validations:
+      required: true
+  - type: textarea
+    id: upstream
+    attributes:
+      label: 上游是否有对应能力
+      description: 对应的 muse2api 端点或参数；没有的话说明为什么仍希望封装
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 你考虑过的替代方案
+    validations:
+      required: false
