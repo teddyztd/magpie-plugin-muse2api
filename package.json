@@ -1,6 +1,6 @@
 {
   "name": "magpie-plugin-muse2api",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Magpie 插件：把自建 muse2api 网关接成 Muse 对话 provider，并提供图片 / 视频生成工具。",
   "type": "module",
   "main": "./server/index.mjs",

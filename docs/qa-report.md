@@ -1,6 +1,6 @@
 # QA 报告：magpie-plugin-muse2api
 
-- 被测版本：`main` @ `a10031d`（插件 0.1.0），回归轮次 `@5d6f36b`
+- 被测版本：`main` @ `6fe328a`（插件 0.1.1），回归轮次 `@5d6f36b`
 - 宿主：Magpie（`F:\magpie-windows-amd64.exe`，Bun 1.4.4 宿主）
 - 上游：muse2api `app.py` v1.6.11，`http://127.0.0.1:18610`
 - 账号池：2 个账号——`8c3d8d1c3a9e`（`magpie 网页登录 2026/11/18 11:42:37`）与

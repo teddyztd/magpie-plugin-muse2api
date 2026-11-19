@@ -198,6 +198,7 @@ bun run test/smoke.mjs  # 端到端冒烟：插件入口 → 真 HTTP → mock m
 - [`docs/qa-report.md`](docs/qa-report.md)：全功能 QA 报告（登录 / 多账号 / 三能力 / 错误契约，含证据）
 - [`docs/troubleshooting-admin-pool.md`](docs/troubleshooting-admin-pool.md)：后台页账号池显示 0 的根因排查
 - [`CONTRIBUTING.md`](CONTRIBUTING.md)：本地开发、改动约定、发布方式
+- [`CHANGELOG.md`](CHANGELOG.md)：版本变更记录
 
 ## License
 
