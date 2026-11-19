@@ -61,25 +61,47 @@ describe("provider 声明", () => {
       input: ["text"],
       output: ["text"],
     })
+    // 生图模型候选：没有 image / video output 的模型，Magpie 的「生图模型」
+    // 下拉里只会显示「自动 · 没有能生图的模型」。
+    expect(provider.models["muse-image"].modalities).toEqual({
+      input: ["text", "image"],
+      output: ["image"],
+    })
+    expect(provider.models["muse-video"].modalities).toEqual({
+      input: ["text", "image"],
+      output: ["video"],
+    })
   })
 
-  test("provider.models 只保留 muse-spark", async () => {
+  test("provider.models 保留三个模型（对话 + 生图 + 生视频）", async () => {
     const hook = buildProviderHook()
-    const fallback = { models: { "muse-spark": { name: "Muse Spark" } } }
+    const fallback = {
+      models: {
+        "muse-spark": { name: "Muse Spark" },
+        "muse-image": { name: "Muse Image" },
+        "muse-video": { name: "Muse Video" },
+      },
+    }
     const out = await hook.models(fallback, {
       auth: { type: "api", key: mock.apiKey, metadata: { baseUrl: mock.url } },
     })
-    expect(Object.keys(out)).toEqual(["muse-spark"])
+    expect(Object.keys(out).sort()).toEqual(["muse-image", "muse-spark", "muse-video"])
     expect(out["muse-spark"].name).toBe("Muse Spark")
   })
 
   test("provider.models 在服务不可用时回退到静态列表", async () => {
     const hook = buildProviderHook()
-    const fallback = { models: { "muse-spark": { name: "Muse Spark" } } }
+    const fallback = {
+      models: {
+        "muse-spark": { name: "Muse Spark" },
+        "muse-image": { name: "Muse Image" },
+        "muse-video": { name: "Muse Video" },
+      },
+    }
     const out = await hook.models(fallback, {
       auth: { type: "api", key: "x", metadata: { baseUrl: "http://127.0.0.1:1" } },
     })
-    expect(Object.keys(out)).toEqual(["muse-spark"])
+    expect(Object.keys(out).sort()).toEqual(["muse-image", "muse-spark", "muse-video"])
   })
 
   test("provider.models 在不是 api 登录时原样返回", async () => {

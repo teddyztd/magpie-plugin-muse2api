@@ -2,6 +2,18 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
+## [0.1.2] - 2026-11-20
+
+### 新增
+
+- `provider.models` 现在声明 `muse-image` 与 `muse-video`，`modalities.output` 分别为 `image` / `video`。
+  这是 Magpie「设置 › 模型 › 生图模型」的候选来源：不声明时该处只显示「自动 · 没有能生图的模型」，
+  Magpie Image（`magpie mcp image`）也就没有模型可画。
+
+### 说明
+
+- 只增加模型声明，工具（`generate_image` / `image_status` / `generate_video` / `video_status`）契约不变。
+- 上游 `/v1/models` 不可达时仍回退到静态列表，现在静态列表同样含三个模型。
 ## [0.1.1] - 2026-11-19
 
 ### 新增
