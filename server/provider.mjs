@@ -1,8 +1,10 @@
 import {
   DEFAULT_BASE,
+  IMAGE_MODEL,
   MODEL_ID,
   PROVIDER_ID,
   PROVIDER_NAME,
+  VIDEO_MODEL,
   apiBase,
   authHeaders,
   checkBaseUrl,
@@ -24,6 +26,28 @@ function baseModels() {
       tool_call: false,
       modalities: { input: ["text"], output: ["text"] },
       limit: { context: 128000, output: 16000 },
+      cost: { input: 0, output: 0 },
+    },
+    // muse-image / muse-video 是「生图模型」的候选：Magpie 的 设置 › 模型 › 生图模型
+    // 只列出 output 里带 image / video 的模型，所以必须在这里声明，否则那边显示
+    // 「自动 · 没有能生图的模型」。声明后 Magpie 会按 OpenAI 兼容协议把请求发到
+    // {baseURL}/images/generations（图）与视频接口，正好是 muse2api 已经实现的路由。
+    [IMAGE_MODEL]: {
+      name: "Muse Image",
+      reasoning: false,
+      attachment: true,
+      tool_call: false,
+      modalities: { input: ["text", "image"], output: ["image"] },
+      limit: { context: 32000, output: 8192 },
+      cost: { input: 0, output: 0 },
+    },
+    [VIDEO_MODEL]: {
+      name: "Muse Video",
+      reasoning: false,
+      attachment: true,
+      tool_call: false,
+      modalities: { input: ["text", "image"], output: ["video"] },
+      limit: { context: 32000, output: 8192 },
       cost: { input: 0, output: 0 },
     },
   }
@@ -151,12 +175,12 @@ export function buildProviderHook({ input, options } = {}) {
         return fallback
       }
       const list = Array.isArray(body?.data) ? body.data : []
-      const base = fallback[MODEL_ID]
-      if (!base) return fallback
-      // 只把可对话的 muse-spark 暴露为对话模型；muse-image / muse-video 走工具。
+      // 三个模型都参与：muse-spark 用来对话，muse-image / muse-video 让
+      // Magpie 的「生图模型」能把它们列为候选。上游返回了名字就用上游的。
       const out = {}
       for (const m of list) {
-        if (m?.id !== MODEL_ID) continue
+        const base = fallback[m?.id]
+        if (!base) continue
         out[m.id] = { ...base, id: m.id, name: m.name ?? base.name }
       }
       return Object.keys(out).length ? out : fallback
