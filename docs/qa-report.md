@@ -1,10 +1,11 @@
 # QA 报告：magpie-plugin-muse2api
 
-- 被测版本：`main` @ `a10031d`（插件 0.1.0）
+- 被测版本：`main` @ `a10031d`（插件 0.1.0），回归轮次 `@5d6f36b`
 - 宿主：Magpie（`F:\magpie-windows-amd64.exe`，Bun 1.4.4 宿主）
 - 上游：muse2api `app.py` v1.6.11，`http://127.0.0.1:18610`
-- 账号池：1 个账号 `8c3d8d1c3a9e`（`magpie 网页登录 2026/11/18 11:42:37`，`cookie_count 8`，`essential_ok true`）
-- 执行时间：2026-11-18
+- 账号池：2 个账号——`8c3d8d1c3a9e`（`magpie 网页登录 2026/11/18 11:42:37`）与
+  `33122993e82e`（`muse2api 网页登录 #1 2026/11/19 19:59:11`），均 `essential_ok true`
+- 执行时间：2026-11-18（首轮）、2026-11-19（双账号 + 三能力回归）
 
 ## 一、结论摘要
 
@@ -15,6 +16,7 @@
 | 能力 | 5 | 5 | 0 | 文本 / 图片 / 视频 / 模型列表 / 供应商页显示 |
 | 错误契约 | 6 | 4 | 0（2 项为宿主校验） | 参数类型错误在进入工具前被宿主 zod 拦截 |
 | 后台页 | 2 | 2 | 0 | 根因见 `docs/troubleshooting-admin-pool.md` |
+| 2026-11-19 回归 | 7 | 7 | 0 | 含服务拉起、第二账号真实登录与三能力回归，见第八节 |
 
 **没有发现插件侧功能性缺陷。** 唯一需要文档化的行为差异：参数类型/必填校验由宿主在
 工具执行前完成，返回的是宿主文案而不是插件的 JSON 错误对象（见 C5/C6）。
@@ -78,8 +80,21 @@
 ### B3 不同账号并存
 
 - 预期：第二个账号登录后账号池为 2 条，互不影响
-- 实际：上游 `store.add_account` 只 append（无去重），插件侧指纹不同即新建
-- 结论：**通过（单测 + 上游行为核对）**；真实双账号登录待用户提供第二个账号后复验
+- 实际：上游 `store.add_account` 只 append（无去重），插件侧指纹不同即新建；
+  2026-11-19 用第二个 muse.ai 账号真实登录一次，`GET /admin/accounts` 变为 2 条
+  （`33122993e82e`，`cookie_count 8 → 10`，`essential_ok true`），
+  `POST /admin/accounts/33122993e82e/test` 返回
+  `{"ok":true,"message":"会话有效，可正常生成","synced":{"synced":8,"changed":2}}`，
+  额度查询拿到 `weekly_used_pct: 0`。Magpie 供应商弹窗同时列出两条账号，
+  第一条（优先级最高）为 `33122993e82e`
+- 结论：**通过（真实双账号）**
+
+### B5 新增账号的优先级
+
+- 预期：新登录账号排在账号池首位并被网关优先使用
+- 实际：Magpie 弹窗里 `33122993e82e` 在 `8c3d8d1c3a9e` 之上（`Group '33122993e82e · 按住拖动调整位置'` 在 y=328，
+  旧账号在 y=396）；随后三能力回归期间该账号 `use_count` 由 0 增至 2，说明请求确实走了新账号
+- 结论：**通过**
 
 ### B4 残留进程与目录清理
 
@@ -155,3 +170,23 @@ bun run test/smoke.mjs         # SMOKE OK
 node E:/ZzTmp/mcp/qa.mjs       # 图片 + 视频全链路
 node E:/ZzTmp/mcp/qa-fail.mjs  # 失败路径
 ```
+
+## 八、2026-11-19 回归（服务重启 + 双账号）
+
+背景：Magpie 侧登录弹窗报 `连不上 http://127.0.0.1:18610/v1/models：ECONNREFUSED`。
+根因是 muse2api 进程已退出（端口无监听），不是插件缺陷。
+
+| 用例 | 步骤 | 预期 | 实际 | 结论 |
+|---|---|---|---|---|
+| D1 服务拉起 | `python -m uvicorn app:app --host 127.0.0.1 --port 18610` | 端口监听、`/admin/accounts` 可读 | 6 秒内开始监听；日志出现「【自动保活守护进程】已启动」「【浏览器预热】」 | 通过 |
+| D2 第二账号 Cookie 登录 | Magpie → 供应商 → muse2api → 添加另一个账号 → 网页登录（Cookie） | 新开独立 profile 的浏览器，登录后自动入库、窗口自动关闭 | 浏览器拉起后用户完成登录，自动关闭；账号池新增 `33122993e82e` | 通过 |
+| D3 新账号健康 | `POST /admin/accounts/33122993e82e/test` | `ok:true` 且 cookie 核心项齐 | `{"ok":true,"message":"会话有效，可正常生成","synced":{"synced":8,"changed":2}}`，`essential_ok true` | 通过 |
+| D4 供应商弹窗多账号 | 打开 muse2api 弹窗 | 两条账号、可切换优先级 | 两条 group 依次为 `33122993e82e` / `8c3d8d1c3a9e`，下方「添加另一个 muse2api 账号」仍在 | 通过 |
+| D5 文本回归 | `POST /v1/chat/completions` `model=muse2api/muse-spark` | 返回模型回答 | 返回「回归通过」 | 通过 |
+| D6 图片回归 | `generate_image` → `image_status` | 任务完成并给 URL | `task_43ea9a835aa34d708d00` → `.../b6bcc7b0ca2b4ae9a30d66e8e71e9573.webp`，5732 字节，头部 `52 49 46 46 … 57 45 42 50`（RIFF/WEBP） | 通过 |
+| D7 视频回归 | `generate_video` → `video_status` | 任务完成并给 mp4 URL | `task_91a26d59666949d1a1f6` → `.../d0c00026376d46c99705527cd5003e3b.mp4`，561554 字节，头部 `00 00 00 20 66 74 79 70 69 73 6f 6d`（`ftyp isom`） | 通过 |
+
+回归证据：`E:/ZzTmp/mcp/qa/evidence.json`，按字节数/魔术字节核对下载产物。
+
+**操作注意**：`app.py` 没有 `__main__` 入口，`python app.py` 只打印 DeprecationWarning 就退出，
+端口不会监听；必须用 `python -m uvicorn app:app`。
