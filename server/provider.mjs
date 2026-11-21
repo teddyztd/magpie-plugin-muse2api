@@ -89,7 +89,7 @@ const prompts = [
   },
 ]
 
-export function buildAuthHook({ input, options, log } = {}) {
+export function buildAuthHook({ input, options, log, gateway } = {}) {
   return {
     provider: PROVIDER_ID,
     maxConcurrency: 1,
@@ -98,7 +98,7 @@ export function buildAuthHook({ input, options, log } = {}) {
       {
         type: "oauth",
         label: "muse.ai 网页登录（Cookie）",
-        authorize: buildBrowserLogin({ input, options, log }),
+        authorize: buildBrowserLogin({ input, options, log, gateway }),
       },
       {
         type: "api",
@@ -112,6 +112,13 @@ export function buildAuthHook({ input, options, log } = {}) {
       const apiKey = normalizeKey(inputs?.apiKey ?? inputs?.key)
       if (!baseUrl) return { type: "failed", error: "请填写 muse2api 地址" }
       if (!apiKey) return { type: "failed", error: "请填写 MUSE2API_KEY" }
+      // 本地网关没人听时先自动拉起（gateway.mjs），拉起失败则把它的日志尾端
+      // 直接带给用户，比只报 ECONNREFUSED 可行动得多。
+      try {
+        await gateway?.ensure(baseUrl, apiKey)
+      } catch (e) {
+        return { type: "failed", error: e?.message ?? String(e) }
+      }
       let res
       try {
         res = await fetch(modelsUrl(baseUrl), {
@@ -156,13 +163,17 @@ function credentialOf(auth, { input, options } = {}) {
   }
 }
 
-export function buildProviderHook({ input, options } = {}) {
+export function buildProviderHook({ input, options, gateway } = {}) {
   return {
     id: PROVIDER_ID,
     async models(provider, { auth } = {}) {
       const fallback = provider?.models ?? baseModels()
       const { key: apiKey, baseUrl } = credentialOf(auth, { input, options })
       if (!apiKey) return fallback
+      // 刷新模型列表时若网关没在跑，顺手把它带起来；拉不起就回退静态列表。
+      try {
+        await gateway?.ensure(baseUrl, apiKey)
+      } catch {}
       let body
       try {
         const res = await fetch(modelsUrl(baseUrl), {

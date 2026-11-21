@@ -2,6 +2,23 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
+## [0.2.0] - 2026-11-22
+
+### 新增
+
+- **网关自动拉起与保活**（`server/gateway.mjs`）：插件加载时后台自动拉起本机 muse2api 实例，
+  每 30 秒健康检查，连续 2 次失败自动重启（指数退避，上限 5 分钟）。
+  登录校验、模型列表刷新、网页登录前也会先确保网关在跑。
+- 新插件选项：`gatewayEnabled` / `gatewayKeepAlive` / `gatewayDir` / `gatewayPython`；
+  环境变量 `MUSE2API_GATEWAY_AUTOLAUNCH` / `MUSE2API_GATEWAY_KEEPALIVE` / `MUSE2API_GATEWAY_DIR` / `MUSE2API_PYTHON`。
+- 拉起失败时登录报错附带网关日志末尾（`data/logs/gateway-keepalive.log`）。
+
+### 说明
+
+- 只作用于本机实例（`127.0.0.1` / `localhost` / `::1`），远端 `baseUrl` 不受影响。
+- 只杀自己拉起的进程，不动手动起的 uvicorn。
+- 验收：`E:\ZzTmp\mcp\gateway-harness.mjs` 7 步全绿（自动拉起 → 模型列表 → 模拟崩溃 → 自动恢复）。
+
 ## [0.1.2] - 2026-11-20
 
 ### 新增
