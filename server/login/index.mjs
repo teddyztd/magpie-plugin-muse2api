@@ -209,7 +209,7 @@ function successResult(cfg, baseUrl, accountId) {
  * Magpie 的 oauth 登录方法：authorize 返回进度页地址，callback 里开浏览器抓 cookie、
  * 导入 muse2api、再用当前 key 收口。账号池在 muse2api 侧，所以成功凭据仍是那把 key。
  */
-export function buildBrowserLogin({ input, options, log } = {}) {
+export function buildBrowserLogin({ input, options, log, gateway } = {}) {
   return async function authorize() {
     const cfg = resolveConfig({ input, options })
     const baseUrl = cfg.baseUrl || DEFAULT_BASE
@@ -219,6 +219,12 @@ export function buildBrowserLogin({ input, options, log } = {}) {
       throw new Error(
         "网页登录需要先有 muse2api 的 API key（m2a_…）：请在「插件 → muse2api → 选项」里填 apiKey，或设置环境变量 MUSE2API_KEY。",
       )
+    }
+    // 网关没在跑就先自动拉起（gateway.mjs），拉不起再用原来的报错。
+    try {
+      await gateway?.ensure(baseUrl, cfg.apiKey)
+    } catch (e) {
+      throw new Error(e?.message ?? String(e))
     }
     let res
     try {
