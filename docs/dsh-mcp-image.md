@@ -1,6 +1,6 @@
 # DSH 侧接入 muse 生图 / 生视频（magpie mcp image，stdio MCP）
 
-> 状态：验收进行中。本文档记录从 DSH 会话里调用 muse2api 生图/生视频能力的完整链路、复现命令与证据。
+> 状态：验收完成。本文档记录从 DSH 会话里调用 muse2api 生图/生视频能力的完整链路、复现命令与证据。
 
 ## 背景
 
@@ -75,17 +75,16 @@ mcp-manager:
 - 字节数：21192
 - 文件头 hex(0-15)：`52 49 46 46 c0 52 00 00 57 45 42 50 56 50 38 20` → 0-3 `RIFF`、8-11 `WEBP`（VP8）✅
 
-### 3. 文生视频 ⚠️（上游成功、文件头正确；Magpie 内置取回该次报 404）
+### 3. 文生视频 ✅（修复后）
 
-- [x] 视频真实生成、产物文件头 `ftyp isom`
-- [ ] `generate_video` 工具端到端交付（受 Magpie 内置 muse2api 取回 bug 影响，见下）
+- [x] `generate_video` 工具端到端交付，产物文件头 `ftyp isom`
 
-- 调用：`mcp__magpie-image__generate_video({ prompt: "a gentle ocean wave rolling onto a beach, 4 seconds", seconds: 4, path: "E:\\ZzTmp\\mcp\\verify-out" })` → 返回 id `video-141008-2`
-- `generation_result(video-141008-2)` 报错：`fetching the video (video_muse2api.dGFza18zNDdiMzhhN2VmODg0OGZkOTYxZg...): muse2api: {"detail":"Not Found"}`
-- 但查 muse2api `/admin/tasks`：任务 `task_347b38a7ef8848fd961f` 状态 `completed` / progress 100，`result.url = http://127.0.0.1:18610/v1/media/b7b800350c434137bfc3709cd3ba5875.mp4`，bytes `6226923`，elapsed 108.3s（prompt 被网关改写为「时长严格为 6 秒」）。
-- 从该 result.url 直取并落盘：`E:\ZzTmp\mcp\verify-out\muse-video-dsh.mp4`，6226923 字节
+- 根因（issue #20）：Magpie core 在视频完成后固定 `GET /v1/videos/{task_id}/content` 拉取成品，不读 `result.url`；muse2api 网关缺该路由 → FastAPI 默认 404 `{"detail":"Not Found"}`。用假网关 harness 抓包证实（core 只发 `POST /v1/videos` 与 `GET /v1/videos/task_fake_1/content` 两个请求）。
+- 修复：muse2api `app.py` 新增 `GET /v1/videos/{task_id}/content` 与 `GET /v1/videos/generations/{task_id}/content`（FileResponse 返回 mp4；task 不存在 404、未完成 400）。
+- DSH 侧复测（修复后）：`mcp__magpie-image__generate_video({ prompt: "a gentle ocean wave rolling onto a beach, 4 seconds", seconds: 4, path: "E:\\ZzTmp\\mcp\\verify-out" })` → `generation_result(video-141008-3)` 返回 `Generated a video with muse2api/muse-video, saved to: E:\ZzTmp\mcp\verify-out\a-gentle-ocean-wave-rolling-onto-a-beach-20261121-114220.mp4`
+- 产物：`E:\ZzTmp\mcp\verify-out\a-gentle-ocean-wave-rolling-onto-a-beach-20261121-114220.mp4`，5024265 字节
 - 文件头 hex(0-15)：`00 00 00 20 66 74 79 70 69 73 6f 6d 00 00 02 00` → 4-11 `ftypisom` ✅
-- 结论：muse2api 侧视频生成 100% 成功、mp4 合法；**Magpie `mcp image` 的 muse2api 视频取回链路存在 404 bug**（与 2026-11-20 直接 stdio 复现一致，可稳定复现，非 DSH 集成问题），建议单开 issue 跟踪。
+- 注：muse2api 网关不是 git 仓库，修复以 patch 形式记录在 issue #20。
 
 ## Magpie 侧准备过程记录（2026-11-20）
 
