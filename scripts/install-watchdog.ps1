@@ -28,10 +28,14 @@ if ($PythonPath) { $argLine += " -PythonPath `"$PythonPath`"" }
 
 $action = New-ScheduledTaskAction -Execute $hostExe -Argument $argLine
 
+# 登录触发：开机登录后立刻巡检一次
 $triggerLogon = New-ScheduledTaskTrigger -AtLogOn
-$triggerLogon.Repetition = (New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
-    -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes) `
-    -RepetitionDuration (New-TimeSpan -Days 3650)).Repetition
+
+# 时间触发：每 N 分钟巡检。必须有独立时间触发器——只给登录触发器挂 Repetition 时
+# 任务计划程序不会计算 NextRunTime，等效能于「登录时跑一次」，保活就失效了。
+$triggerTimer = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
+  -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes) `
+  -RepetitionDuration (New-TimeSpan -Days 3650)
 
 $settings = New-ScheduledTaskSettingsSet `
   -AllowStartIfOnBatteries `
@@ -40,7 +44,7 @@ $settings = New-ScheduledTaskSettingsSet `
   -MultipleInstances IgnoreNew `
   -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
 
-Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $triggerLogon -Settings $settings -Force | Out-Null
+Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger @($triggerLogon, $triggerTimer) -Settings $settings -Force | Out-Null
 Write-Host "registered: $TaskName (every $IntervalMinutes min, gateway=$GatewayDir port=$Port)"
 
 # 立刻跑一次，确认可用

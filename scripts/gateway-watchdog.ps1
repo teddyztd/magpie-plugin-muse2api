@@ -18,7 +18,7 @@ param(
   [string]$GatewayDir = "E:\github\muse2api",
   [int]$Port = 18610,
   [string]$PythonPath = "",
-  [int]$WaitSeconds = 20
+  [int]$WaitSeconds = 75
 )
 
 $ErrorActionPreference = "Stop"
@@ -115,4 +115,9 @@ while ((Get-Date) -lt $deadline) {
 }
 
 Write-Log "launch timeout after ${WaitSeconds}s (pid=$($proc.Id)); see gateway-uvicorn.err.log"
+# 冷启动偶尔超过等待窗口但最终会起来：再补一次最终判定，避免日志误报失败
+if (Test-Port $Port) {
+  Write-Log "port $Port came up late (pid=$($proc.Id))"
+  exit 0
+}
 exit 1

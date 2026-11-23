@@ -2,6 +2,23 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
+## [0.2.2] - 2026-11-23
+
+### 修复
+
+- **看门狗根本不会按时巡检**（关键）：`install-watchdog.ps1` 原来只注册了「登录时」触发器，
+  再给它挂 Repetition——任务计划程序对这种组合不计算 `NextRunTime`，等效能于「登录时跑一次」，
+  于是登录后网关再挂掉就没有任何东西管它（实测杀掉监听进程后 168 秒无人恢复）。
+  现在改为「登录触发 + 独立时间触发（默认每 1 分钟，RepetitionInterval PT1M）」，
+  `NextRunTime` 正常滚动。
+- **冷启动误报超时**：`gateway-watchdog.ps1` 等待窗口 20s → 75s，并在超时后补一次最终端口判定，
+  uvicorn 冷启动稍慢时不再打 `launch timeout` 假失败。
+
+### 验证
+
+- 杀掉 18610 监听进程后不做任何人工操作：计划任务在下一分钟窗口内拉起 uvicorn，
+  端口 49 秒内恢复（`launched pid=9844 and port 18610 is up`），任务 `NextRunTime` 持续滚动。
+
 ## [0.2.1] - 2026-11-23
 
 ### 新增
