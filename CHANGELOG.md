@@ -2,6 +2,22 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
+## [0.2.1] - 2026-11-23
+
+### 新增
+
+- **外部看门狗兜底**（`scripts/gateway-watchdog.ps1`）：探测 `127.0.0.1:18610`，不通就直接拉起 uvicorn，
+  完全不依赖 Magpie 是否加载插件。配套 `scripts/install-watchdog.ps1`（注册计划任务：登录启动 + 每 3 分钟巡检）
+  与 `scripts/uninstall-watchdog.ps1`。
+- **加载标记**：插件入口向 `<网关目录>/data/logs/plugin-load-marker.log` 追加一行，
+  用于判断 Magpie 到底有没有执行到插件（没有新行 = 宿主加载失败，不是插件逻辑问题）。
+
+### 修复
+
+- 说明「升级到 0.2.0 仍不自动拉起」的真实原因：Magpie 启动期插件加载预算是 20 秒，
+  插件多时会被挤爆并打 `plugin … didn't load: the plugin's load didn't finish in 20s`，
+  此时插件内保活代码不会执行。已在 README 补排查路径与兜底方案。
+
 ## [0.2.0] - 2026-11-22
 
 ### 新增
