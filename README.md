@@ -183,7 +183,7 @@ expected string, received undefined`，这时代码根本没执行到插件里�
 
 环境变量兜底：`MUSE2API_GATEWAY_AUTOLAUNCH=0`、`MUSE2API_GATEWAY_KEEPALIVE=0`、`MUSE2API_GATEWAY_DIR`、`MUSE2API_PYTHON`。
 
-### 外部看门狗（v0.2.1 起，插件没加载成功时兜底）
+### 外部看门狗（v0.2.1 起，v0.2.2 修正巡检触发）
 
 插件内保活有个前提：**Magpie 得先把插件加载起来**。实测 Magpie 启动期给每个插件的加载预算是
 20 秒，插件多时会被挤爆，日志里出现
@@ -193,7 +193,7 @@ expected string, received undefined`，这时代码根本没执行到插件里�
 兜底方案是把保活挪到系统层，完全绕开 Magpie：
 
 ```powershell
-# 注册（登录时启动 + 每 3 分钟巡检，掉线约 6 秒内自愈）
+# 注册（登录时立刻巡检一次 + 之后每分钟巡检一次；实测杀掉网关后约 50 秒自愈）
 pwsh -NoProfile -ExecutionPolicy Bypass -File scripts\install-watchdog.ps1
 
 # 卸载
