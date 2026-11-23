@@ -13,6 +13,17 @@ function makeLog(input) {
 export const Muse2ApiPlugin = async (input, options) => {
   const log = makeLog(input)
 
+  // 加载标记：确认 Magpie 是否真的执行到插件入口（诊断用，失败不影响加载）
+  try {
+    const { appendFileSync, mkdirSync } = await import("node:fs")
+    const markerDir = "E:\\github\\muse2api\\data\\logs"
+    mkdirSync(markerDir, { recursive: true })
+    appendFileSync(
+      markerDir + "\\plugin-load-marker.log",
+      `${new Date().toISOString()} loaded pid=${process.pid} entry=${import.meta.url}\n`,
+    )
+  } catch {}
+
   // 本地网关守护：插件一加载就后台预热（不阻塞宿主），并且之后每次
   // authorize / models 前都会再 ensure 一次。配置项见 gateway.mjs 的 resolveGatewayConfig。
   let gateway = null
